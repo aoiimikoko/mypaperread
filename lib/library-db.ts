@@ -1,4 +1,6 @@
-export type SavedPage = { heading: string; text: string; translation: string };
+import type { SentencePair } from "./sentences";
+
+export type SavedPage = { heading: string; text: string; translation: string; sentencePairs?: SentencePair[] };
 export type SavedMark = { startItem: number; startOffset: number; endItem: number; endOffset: number; color: "yellow" | "green" | "pink" };
 export type SavedPaper = {
   id: string;

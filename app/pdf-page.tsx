@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { sentenceItemRanges, type ItemRange, type SentencePair } from "@/lib/sentences";
 
 export type PdfMark = {
   startItem: number;
@@ -26,11 +27,14 @@ function getPdf(data: Uint8Array): Promise<PDFDocumentProxy> {
   return loading;
 }
 
-export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateSelection }: {
+export default function PdfPage({ data, index, zoom, marks, sentencePairs, activeSentenceIndex, onSentenceSelect, onMark, onTranslateSelection }: {
   data: Uint8Array;
   index: number;
   zoom: number;
   marks: PdfMark[];
+  sentencePairs: SentencePair[];
+  activeSentenceIndex: number | null;
+  onSentenceSelect: (index: number) => void;
   onMark: (mark: PdfMark) => void;
   onTranslateSelection: (text: string) => Promise<string>;
 }) {
@@ -38,6 +42,7 @@ export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateS
   const canvas = useRef<HTMLCanvasElement>(null);
   const textLayer = useRef<HTMLDivElement>(null);
   const selectedRange = useRef<Range | null>(null);
+  const sentenceRanges = useRef<(ItemRange | null)[]>([]);
   const [width, setWidth] = useState(0);
   const [visible, setVisible] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -57,6 +62,13 @@ export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateS
     }, { rootMargin: "900px" });
     intersection.observe(element);
     return () => { resize.disconnect(); intersection.disconnect(); };
+  }, []);
+  useEffect(() => {
+    const clearCollapsed = () => {
+      if (window.getSelection()?.isCollapsed) { setSelection(null); selectedRange.current = null; }
+    };
+    document.addEventListener("selectionchange", clearCollapsed);
+    return () => document.removeEventListener("selectionchange", clearCollapsed);
   }, []);
 
   useEffect(() => {
@@ -99,11 +111,14 @@ export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateS
   }, [data, index, width, zoom, visible]);
 
   useEffect(() => {
-    if (!rendered || !textLayer.current) return;
+    if (!rendered || !textLayer.current || selection) return;
     const items = Array.from(textLayer.current.querySelectorAll<HTMLElement>("span[role='presentation']"));
+    sentenceRanges.current = sentenceItemRanges(items.map(item => item.textContent || ""), sentencePairs.map(pair => pair.source));
     items.forEach((item, itemIndex) => {
       const value = item.textContent || "";
       const colors: (PdfMark["color"] | null)[] = Array(value.length).fill(null);
+      const active = activeSentenceIndex === null ? null : sentenceRanges.current[activeSentenceIndex];
+      const linkedAt = (position: number) => !!active && itemIndex >= active.startItem && itemIndex <= active.endItem && position >= (itemIndex === active.startItem ? active.startOffset : 0) && position < (itemIndex === active.endItem ? active.endOffset : value.length);
       for (const mark of marks) {
         if (itemIndex < mark.startItem || itemIndex > mark.endItem) continue;
         const start = itemIndex === mark.startItem ? mark.startOffset : 0;
@@ -113,11 +128,12 @@ export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateS
       const fragment = document.createDocumentFragment();
       for (let start = 0; start < value.length;) {
         const color = colors[start];
+        const linked = linkedAt(start);
         let end = start + 1;
-        while (end < value.length && colors[end] === color) end++;
-        if (color) {
+        while (end < value.length && colors[end] === color && linkedAt(end) === linked) end++;
+        if (color || linked) {
           const highlighted = document.createElement("span");
-          highlighted.className = `pdf-inline-mark pdf-inline-mark-${color}`;
+          highlighted.className = `${color ? `pdf-inline-mark pdf-inline-mark-${color}` : ""}${linked ? " pdf-linked-sentence" : ""}`.trim();
           highlighted.textContent = value.slice(start, end);
           fragment.append(highlighted);
         } else fragment.append(document.createTextNode(value.slice(start, end)));
@@ -125,15 +141,31 @@ export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateS
       }
       item.replaceChildren(fragment);
     });
-  }, [marks, rendered]);
+  }, [marks, rendered, sentencePairs, activeSentenceIndex, selection]);
 
-  function inspectSelection() {
+  function inspectSelection(event?: { clientX: number; clientY: number }) {
     const layer = textLayer.current;
     const current = window.getSelection();
-    if (!layer || !current?.rangeCount || current.isCollapsed) { setSelection(null); return; }
-    const range = current.getRangeAt(0);
-    if (!layer.contains(range.startContainer) || !layer.contains(range.endContainer)) { setSelection(null); return; }
-    const text = current.toString().trim();
+    if (!layer) return;
+    const items = Array.from(layer.querySelectorAll<HTMLElement>("span[role='presentation']"));
+    const point = (node: Node, offset: number) => {
+      const item = items.findIndex(candidate => candidate === node || candidate.contains(node));
+      if (item < 0) return null;
+      const before = document.createRange();
+      before.selectNodeContents(items[item]);
+      before.setEnd(node, offset);
+      return { item, offset: before.toString().length };
+    };
+    const range = current?.rangeCount ? current.getRangeAt(0) : null;
+    const selected = !!range && !current?.isCollapsed && layer.contains(range.startContainer) && layer.contains(range.endContainer);
+    const caret = selected ? range : event ? document.caretRangeFromPoint(event.clientX, event.clientY) : null;
+    const at = caret && layer.contains(caret.startContainer) ? point(caret.startContainer, caret.startOffset) : null;
+    if (at) {
+      const sentence = sentenceRanges.current.findIndex(candidate => candidate && (at.item > candidate.startItem || at.item === candidate.startItem && at.offset >= candidate.startOffset) && (at.item < candidate.endItem || at.item === candidate.endItem && at.offset <= candidate.endOffset));
+      if (sentence >= 0) onSentenceSelect(sentence);
+    }
+    if (!selected || !range) { setSelection(null); selectedRange.current = null; return; }
+    const text = current?.toString().trim() || "";
     if (!text) { setSelection(null); return; }
     const rect = range.getBoundingClientRect();
     selectedRange.current = range.cloneRange();
@@ -178,7 +210,7 @@ export default function PdfPage({ data, index, zoom, marks, onMark, onTranslateS
     finally { setTranslating(false); }
   }
 
-  return <div ref={host} className="pdf-surface" onMouseUp={inspectSelection} onKeyUp={inspectSelection}>
+  return <div ref={host} className="pdf-surface" onMouseUp={inspectSelection} onKeyUp={() => inspectSelection()}>
     {error ? <p className="state-message">{error}</p> : <div className="pdf-page" style={{ width: size.width || "100%", height: size.height || 360 }}>
       <canvas ref={canvas} aria-label={`PDF 第 ${index + 1} 页`} />
       <div ref={textLayer} className="pdf-text-layer" aria-label={`PDF 第 ${index + 1} 页可选文字`} />
