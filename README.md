@@ -19,7 +19,7 @@ pnpm install --frozen-lockfile
 pnpm run dev
 ```
 
-浏览器打开 **http://localhost:5173/**。本地运行无需 ChatGPT 账号。Windows 用户也可以在安装依赖并完成首次构建后双击 `start-local.cmd`，打开 **http://127.0.0.1:8787/**；该窗口保持开启时网站可用。
+浏览器打开 `http://localhost:5173/`。本地运行无需 ChatGPT 账号。Windows 用户也可以在安装依赖并完成首次构建后双击 `start-local.cmd`，打开 `http://127.0.0.1:8787/`；该窗口保持开启时网站可用。
 
 ```sh
 pnpm run build
