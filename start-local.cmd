@@ -26,11 +26,9 @@ if not exist "node_modules\vinext\dist\cli.js" (
   if errorlevel 1 goto failed
 )
 
-if not exist "dist\server\index.js" (
-  echo Building the local version for the first run...
-  call pnpm run build
-  if errorlevel 1 goto failed
-)
+echo Building the current local version...
+call pnpm run build
+if errorlevel 1 goto failed
 
 echo.
 echo mypaperread local address: http://127.0.0.1:8787/
