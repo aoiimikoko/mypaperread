@@ -1,0 +1,256 @@
+"use client";
+
+import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { BookOpen, ChevronLeft, ChevronRight, Columns2, Download, FilePlus2, FileText, Languages, Link2, Search, Settings2, Sparkles, X } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { providerById, providers, type ProviderId } from "@/lib/model-providers";
+
+type Page = { heading: string; text: string; translation: string };
+type DocumentData = { title: string; type: "sample" | "pdf" | "web"; pages: Page[]; pdf?: Uint8Array };
+const sample: DocumentData = { title: "Parallel Reading for Research", type: "sample", pages: [
+  { heading: "Abstract", text: "Reading scientific literature across languages remains a demanding task. Readers must move between source documents and translated text while preserving the structure, terminology, and context of the original work. A parallel reading environment can reduce this friction by aligning each translated passage with its source.", translation: "跨语言阅读科学文献仍是一项艰巨的任务。读者需要在原始文档与译文之间切换，同时保留原作的结构、术语和上下文。对照阅读环境将每段译文与原文对应，可减少这种阅读阻力。" },
+  { heading: "1. Introduction", text: "Research is increasingly collaborative and international. Yet language continues to shape which findings are discovered, discussed, and reused. Existing translation workflows often separate the translated output from the document itself, making it difficult to inspect figures, citations, and nuanced claims in context.", translation: "研究日益依赖跨国协作，但语言仍影响哪些成果能够被发现、讨论和复用。现有翻译流程常将译文与文档本身分离，使读者难以结合图表、引文及上下文核查细微论断。" },
+  { heading: "2. A parallel reading workflow", text: "The reading surface should retain a stable relationship between the source and its translation. Page navigation, text search, and synchronized scrolling help readers locate a passage quickly. Translation remains an aid to interpretation; the original document stays visible for verification.", translation: "阅读界面应维持原文与译文之间稳定的对应关系。页码导航、文本搜索和同步滚动帮助读者快速定位段落。译文用于辅助理解，原始文档始终可见，便于核对。" },
+] };
+
+function PdfPage({ data, index, zoom }: { data: Uint8Array; index: number; zoom: number }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState("");
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = canvas.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting) { setVisible(true); observer.disconnect(); }
+    }, { rootMargin: "900px" });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    let task: { cancel: () => void; promise: Promise<void> } | undefined;
+    (async () => {
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        const pdf = await pdfjs.getDocument({ data: data.slice() }).promise;
+        const page = await pdf.getPage(index + 1);
+        if (cancelled || !canvas.current) return;
+        const viewport = page.getViewport({ scale: zoom });
+        const el = canvas.current;
+        el.width = viewport.width;
+        el.height = viewport.height;
+        task = page.render({ canvas: el, canvasContext: el.getContext("2d")!, viewport });
+        await task.promise;
+      } catch { if (!cancelled) setError("此页无法预览，请尝试重新导入 PDF。"); }
+    })();
+    return () => { cancelled = true; task?.cancel(); };
+  }, [data, index, zoom, visible]);
+  return error ? <p className="state-message">{error}</p> : <canvas ref={canvas} className="pdf-canvas" aria-label={`PDF 第 ${index + 1} 页`} />;
+}
+
+function ContinuousReader({ doc, mode, zoom, target, onPageVisible, onTranslate }: {
+  doc: DocumentData; mode: "parallel" | "triple" | "original" | "translation"; zoom: number; target: string;
+  onPageVisible: (index: number) => void; onTranslate: (index: number) => void;
+}) {
+  useEffect(() => {
+    const rows = Array.from(window.document.querySelectorAll<HTMLElement>("[data-reading-page]"));
+    const observer = new IntersectionObserver(entries => {
+      const first = entries.filter(entry => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (first) onPageVisible(Number((first.target as HTMLElement).dataset.readingPage));
+    }, { rootMargin: "-10% 0px -60% 0px", threshold: [0, .25, .5] });
+    rows.forEach(row => observer.observe(row));
+    return () => observer.disconnect();
+  }, [doc.pages.length, onPageVisible]);
+  return <div className="continuous-reader">{doc.pages.map((item, index) => <section className="continuous-row" data-reading-page={index} key={index}>
+    <div className="continuous-row-title"><span>{doc.type === "pdf" ? "第" : "段落"} {index + 1} {doc.type === "pdf" ? "页" : ""}</span><span>{index + 1} / {doc.pages.length}</span></div>
+    <div className={`reader-grid mode-${mode}`}>
+      {mode !== "translation" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge original-badge">ORIGINAL</span><strong>原文</strong></div><span>{doc.type === "pdf" ? "PDF 页面" : "源文本"}</span></div><div className="paper">{doc.pdf ? <PdfPage data={doc.pdf} index={index} zoom={zoom}/> : <><div className="paper-top"><span>SOURCE DOCUMENT</span><span>{index + 1} / {doc.pages.length}</span></div><h3>{item.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{item.text}</p></>}</div></section>}
+      {mode === "triple" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge text-badge">EXTRACTED TEXT</span><strong>提取文字</strong></div></div><div className="paper extracted-paper"><h3>{item.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{item.text}</p></div></section>}
+      {mode !== "original" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge translation-badge">TRANSLATION</span><strong>译文</strong></div><span>{target}</span></div><div className="paper translated-paper"><div className="paper-top"><span>对照译文</span><span>{index + 1} / {doc.pages.length}</span></div><h3>{item.heading}</h3>{item.translation ? <p style={{fontSize: `${16 * zoom}px`}}>{item.translation}</p> : <div className="empty-translation"><Sparkles size={23}/><strong>这一页尚未翻译</strong><button className="quiet-button" onClick={() => onTranslate(index)}>翻译这一页</button></div>}</div></section>}
+    </div>
+  </section>)}</div>;
+}
+
+export default function Home() {
+  const [doc, setDoc] = useState<DocumentData>(sample);
+  const [page, setPage] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [provider, setProvider] = useState<ProviderId>("openai");
+  const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [target, setTarget] = useState("简体中文");
+  const [query, setQuery] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [zoom, setZoom] = useState(1);
+  const [mode, setMode] = useState<"parallel" | "triple" | "original" | "translation">("parallel");
+  const [direction, setDirection] = useState<"paged" | "continuous">("paged");
+  const fileInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    type Tool = { registerTool: (tool: { name: string; title: string; description: string; inputSchema: object; annotations: { readOnlyHint: boolean }; execute: (input: unknown) => unknown }, options: { signal: AbortSignal }) => void | Promise<void> };
+    const context = (window.document as Document & { modelContext?: Tool }).modelContext;
+    if (!context?.registerTool) return;
+    const lifecycle = new AbortController();
+    try {
+      void Promise.resolve(context.registerTool({
+        name: "navigate_document_page", title: "跳转到文献页面",
+        description: "在当前文献中跳转至指定页或段落，并同步更新对照阅读区域。",
+        inputSchema: { type: "object", properties: { page: { type: "integer", minimum: 1, maximum: doc.pages.length } }, required: ["page"], additionalProperties: false },
+        annotations: { readOnlyHint: false },
+        execute(input) {
+          const value = (input as { page?: number })?.page;
+          if (!Number.isInteger(value) || !value || value < 1 || value > doc.pages.length) throw new Error("页码超出范围");
+          setPage(value - 1);
+          if (direction === "continuous") window.document.querySelector(`[data-reading-page="${value - 1}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+          return { title: doc.title, page: value, total: doc.pages.length };
+        },
+      }, { signal: lifecycle.signal })).catch(() => {});
+    } catch {}
+    return () => lifecycle.abort();
+  }, [doc.title, doc.pages.length, direction]);
+  useEffect(() => {
+    if (direction !== "continuous") return;
+    const id = requestAnimationFrame(() => window.document.querySelector(`[data-reading-page="${page}"]`)?.scrollIntoView({ block: "start" }));
+    return () => cancelAnimationFrame(id);
+  }, [direction]);
+
+  async function readPdf(bytes: Uint8Array, name: string) {
+    const pdfjs = await import("pdfjs-dist");
+    pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+    const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+    const pages: Page[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      setProgress(`正在读取 PDF：${i} / ${pdf.numPages} 页`);
+      const content = await (await pdf.getPage(i)).getTextContent();
+      const text = content.items.map(item => "str" in item ? item.str : "").join(" ").replace(/\s+/g, " ").trim();
+      pages.push({ heading: `第 ${i} 页`, text, translation: "" });
+    }
+    if (!pages.some(p => p.text)) throw new Error("PDF 未提取到文字。扫描版 PDF 暂不支持文字翻译。");
+    setDoc({ title: name.replace(/\.pdf$/i, ""), type: "pdf", pages, pdf: bytes });
+    setPage(0); setImportOpen(false); setNotice(`已导入 ${pdf.numPages} 页 PDF`);
+  }
+  async function handleFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { setNotice("请选择 PDF 文件"); return; }
+    if (file.size > 30 * 1024 * 1024) { setNotice("PDF 请小于 30 MB"); return; }
+    setBusy(true);
+    try { await readPdf(new Uint8Array(await file.arrayBuffer()), file.name); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "PDF 导入失败"); }
+    finally { setBusy(false); setProgress(""); e.target.value = ""; }
+  }
+  async function importUrl() {
+    setBusy(true); setProgress("正在读取链接…");
+    try {
+      const res = await fetch("/api/import-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+      const result = await res.json() as { kind?: string; title?: string; text?: string; data?: string; error?: string };
+      if (!res.ok) throw new Error(result.error || "链接导入失败");
+      if (result.kind === "pdf" && result.data) {
+        const bytes = Uint8Array.from(atob(result.data), c => c.charCodeAt(0));
+        await readPdf(bytes, result.title || "远程 PDF");
+      } else if (result.text) {
+        const chunks = result.text.match(/[\s\S]{1,3500}/g) || [];
+        setDoc({ title: result.title || new URL(url).hostname, type: "web", pages: chunks.map((text, i) => ({ heading: `第 ${i + 1} 部分`, text, translation: "" })) });
+        setPage(0); setImportOpen(false); setNotice("链接导入成功");
+      } else throw new Error("未找到可阅读的正文");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "链接导入失败"); }
+    finally { setBusy(false); setProgress(""); }
+  }
+  function goTo(index: number) {
+    setPage(index);
+    if (direction === "continuous") window.document.querySelector(`[data-reading-page="${index}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  async function translate(all: boolean, atIndex = page) {
+    if (!apiKey.trim() || !model.trim()) { setSettingsOpen(true); setNotice("请先填写模型 API Key 和模型 ID"); return; }
+    const indexes = all ? doc.pages.map((_, i) => i) : [atIndex];
+    setBusy(true);
+    try {
+      for (let step = 0; step < indexes.length; step++) {
+        const index = indexes[step];
+        if (!doc.pages[index].text.trim()) continue;
+        setProgress(`正在翻译 ${step + 1} / ${indexes.length}`);
+        const chunks = doc.pages[index].text.match(/[\s\S]{1,8000}/g) || [];
+        const translated: string[] = [];
+        for (const chunk of chunks) {
+          const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: chunk, key: apiKey, model, target, provider, baseUrl }) });
+          const result = await response.json() as { translation?: string; error?: string };
+          if (!response.ok || !result.translation) throw new Error(result.error || "翻译失败");
+          translated.push(result.translation);
+        }
+        setDoc(current => ({ ...current, pages: current.pages.map((p, i) => i === index ? { ...p, translation: translated.join("\n\n") } : p) }));
+      }
+      setNotice(all ? "全文翻译完成" : "当前页翻译完成");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "翻译失败"); }
+    finally { setBusy(false); setProgress(""); }
+  }
+  async function testConnection() {
+    if (!apiKey.trim() || !model.trim() || (["openai", "azure"].includes(providerById(provider)?.protocol || "") && !baseUrl.trim())) {
+      setNotice("请先填写接口地址、API Key 和模型 ID"); return;
+    }
+    setTesting(true);
+    try {
+      const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "Research improves understanding.", key: apiKey, model, target, provider, baseUrl }) });
+      const result = await response.json() as { translation?: string; error?: string };
+      if (!response.ok || !result.translation) throw new Error(result.error || "连接测试失败");
+      setNotice("连接成功，模型已返回译文");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "连接测试失败"); }
+    finally { setTesting(false); }
+  }
+  function download() {
+    const content = `# ${doc.title}\n\n` + doc.pages.map((p, i) => `## ${p.heading || `第 ${i + 1} 页`}\n\n### 原文\n${p.text}\n\n### 译文\n${p.translation || "（尚未翻译）"}`).join("\n\n");
+    const a = window.document.createElement("a"); a.href = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" })); a.download = `${doc.title}.md`; a.click(); URL.revokeObjectURL(a.href);
+  }
+  const current = doc.pages[page];
+  const matches = query.trim() ? doc.pages.flatMap((p, i) => (p.text + p.translation).toLowerCase().includes(query.toLowerCase()) ? [i] : []) : [];
+
+  return <div className="app-shell">
+    <aside className="rail"><div className="brand-mark"><BookOpen size={21}/></div><button className="rail-button active" aria-label="阅读台"><Columns2 size={21}/></button><button className="rail-button" aria-label="导入文献" onClick={() => setImportOpen(true)}><FilePlus2 size={21}/></button><button className="rail-button" aria-label="翻译设置" onClick={() => setSettingsOpen(true)}><Settings2 size={21}/></button><div className="rail-bottom">M</div></aside>
+    <aside className="library"><div className="library-title"><span className="eyebrow">mypaperread</span><h1>我的文献</h1></div><button className="import-button" onClick={() => setImportOpen(true)}><FilePlus2 size={18}/> 导入文献 <span>+</span></button><div className="library-section">当前文献 <span>01</span></div><div className="library-item"><span className="document-icon"><FileText size={19}/></span><span><strong>{doc.title}</strong><small>{doc.type === "sample" ? "示例文献" : doc.type === "pdf" ? "PDF 文献" : "网页文献"} · {doc.pages.length} {doc.type === "pdf" ? "页" : "段"}</small></span></div><div className="library-hint"><Sparkles size={17}/><p>导入 PDF 或网页链接，开始原文与译文对照阅读。</p></div><div className="library-footer"><span className="footer-dot"/> mypaperread 阅读工作台</div></aside>
+    <main className={`main-area direction-${direction}`}><header className="topbar"><div className="breadcrumbs">mypaperread <ChevronRight size={15}/> <strong>{doc.title}</strong></div><div className="top-actions"><button className="soft-button" onClick={() => setImportOpen(true)}><FilePlus2 size={16}/> 导入</button><button className="icon-button" aria-label="设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button></div></header>
+      <section className="document-header"><div className="doc-kicker"><span className="file-chip">{doc.type === "sample" ? "示例文献" : doc.type === "pdf" ? "PDF" : "网页"}</span><span>双语对照阅读</span></div><div className="title-row"><div><h2>{doc.title}</h2><p>{doc.pages.length} {doc.type === "pdf" ? "页" : "段"} · 原文与译文对照</p></div><div className="title-actions"><button className="quiet-button" disabled={busy || doc.type === "sample"} onClick={() => translate(false)}><Languages size={17}/> 翻译当前页</button><button className="primary-button" disabled={busy || doc.type === "sample"} onClick={() => translate(true)}><Sparkles size={17}/> 翻译全文</button></div></div></section>
+      <div className="toolbar"><div className="toolbar-group"><button className="tool-icon" aria-label="上一页" disabled={page === 0} onClick={() => goTo(page - 1)}><ChevronLeft size={18}/></button><span className="page-count">{doc.type === "pdf" ? "页码" : "段落"} <strong>{page + 1}</strong> / {doc.pages.length}</span><button className="tool-icon" aria-label="下一页" disabled={page === doc.pages.length - 1} onClick={() => goTo(page + 1)}><ChevronRight size={18}/></button></div><div className="toolbar-spacer"/><label className="search-field"><Search size={17}/><input aria-label="搜索文献" placeholder="搜索当前文献" value={query} onChange={e => setQuery(e.target.value)}/></label>{query && <span className="match-count" onClick={() => matches.length && goTo(matches[0])}>{matches.length} 处匹配</span>}<select className="tool-select" aria-label="阅读方向" value={direction} onChange={e => setDirection(e.target.value as "paged" | "continuous")}><option value="paged">按页切换</option><option value="continuous">上下滚动</option></select><div className="toolbar-divider"/><select className="tool-select" aria-label="阅读布局" value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="parallel">双栏对照</option><option value="triple">三栏阅读</option><option value="original">仅原文</option><option value="translation">仅译文</option></select><button className="tool-icon" aria-label="缩小" onClick={() => setZoom(Math.max(.6, zoom - .15))}>−</button><span className="zoom-label">{Math.round(zoom * 100)}%</span><button className="tool-icon" aria-label="放大" onClick={() => setZoom(Math.min(1.8, zoom + .15))}>+</button><button className="tool-icon" aria-label="导出 Markdown" onClick={download}><Download size={18}/></button></div>
+      <div className="reader-wrap"><div className={`reader-grid mode-${mode}`}>{mode !== "translation" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge original-badge">ORIGINAL</span><strong>原文</strong></div><span>{doc.type === "pdf" ? "PDF 页面" : "源文本"}</span></div><div className="paper">{doc.pdf ? <PdfPage data={doc.pdf} index={page} zoom={zoom}/> : <><div className="paper-top"><span>{doc.type === "sample" ? "RESEARCH NOTE · SAMPLE" : "SOURCE DOCUMENT"}</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{current.text}</p><div className="paper-footer">MYPAPERREAD <span>— {page + 1} —</span></div></>}</div></section>}{mode === "triple" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge text-badge">EXTRACTED TEXT</span><strong>提取文字</strong></div><span>可复制</span></div><div className="paper extracted-paper"><div className="paper-top"><span>源文本</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{current.text}</p></div></section>}{mode !== "original" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge translation-badge">TRANSLATION</span><strong>译文</strong></div><span>{target}</span></div><div className="paper translated-paper"><div className="paper-top"><span>对照译文</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3>{current.translation ? <p style={{fontSize: `${16 * zoom}px`}}>{current.translation}</p> : <div className="empty-translation"><Sparkles size={23}/><strong>这一页尚未翻译</strong><span>配置模型 API 后，可以翻译当前页或全文。</span><button className="quiet-button" onClick={() => translate(false)}>翻译当前页</button></div>}{doc.type === "sample" && <div className="translation-note"><Sparkles size={16}/> 示例译文。导入文献后可通过模型 API 生成全文翻译。</div>}</div></section>}</div><div className="reader-bottom"><span><span className="sync-symbol">↔</span> 原文与译文按页对应</span><div className="progress-track"><div style={{width: `${((page + 1) / doc.pages.length) * 100}%`}}/></div><span>{Math.round(((page + 1) / doc.pages.length) * 100)}% 已浏览</span></div></div>
+      {direction === "continuous" && <ContinuousReader doc={doc} mode={mode} zoom={zoom} target={target} onPageVisible={setPage} onTranslate={index => translate(false, index)}/>}
+    </main>
+    {notice && <div role="status" className="toast">{notice}<button aria-label="关闭提示" onClick={() => setNotice("")}><X size={15}/></button></div>}
+    {progress && <div role="status" className="progress-toast">{progress}</div>}
+    <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="modal-content"><DialogHeader><DialogTitle>导入文献</DialogTitle><DialogDescription>选择 PDF 文件，或粘贴公开网页 / PDF 链接。</DialogDescription></DialogHeader><input ref={fileInput} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile}/><button className="drop-zone" disabled={busy} onClick={() => fileInput.current?.click()}><FilePlus2 size={30}/><strong>点击选择 PDF 文件</strong><span>支持可复制文本的 PDF，建议小于 30 MB</span></button><div className="or-line">或使用链接</div><label className="url-field"><Link2 size={17}/><input aria-label="文献链接" placeholder="https://example.com/paper.pdf" value={url} onChange={e => setUrl(e.target.value)}/></label><button className="primary-button wide" disabled={busy || !url.trim()} onClick={importUrl}>导入链接</button></DialogContent></Dialog>
+    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+      <DialogContent className="modal-content">
+        <DialogHeader><DialogTitle>模型 API 设置</DialogTitle><DialogDescription>选择平台，填写对应的密钥、接口地址和模型 ID。</DialogDescription></DialogHeader>
+        <label className="field-label">API 平台
+          <select value={provider} onChange={e => {
+            const next = providerById(e.target.value)!;
+            setProvider(next.id); setBaseUrl(next.baseUrl); setApiKey("");
+            setModel(next.id === "openai" ? "gpt-4o-mini" : next.id === "deepseek" ? "deepseek-v4-flash" : "");
+          }}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
+        </label>
+        {["openai", "azure"].includes(providerById(provider)?.protocol || "") && <label className="field-label">接口地址
+          <input type="url" placeholder={provider === "azure" ? "https://资源名.openai.azure.com/openai/v1" : "https://api.example.com/v1"} value={baseUrl} onChange={e => setBaseUrl(e.target.value)}/>
+        </label>}
+        <label className="field-label">API Key
+          <input type="password" autoComplete="off" placeholder="粘贴当前平台的密钥" value={apiKey} onChange={e => setApiKey(e.target.value)}/>
+        </label>
+        <label className="field-label">模型 ID
+          <input value={model} placeholder={providerById(provider)?.modelHint} onChange={e => setModel(e.target.value)}/>
+        </label>
+        <label className="field-label">目标语言
+          <select value={target} onChange={e => { setTarget(e.target.value); if (doc.type !== "sample") setDoc(current => ({ ...current, pages: current.pages.map(p => ({ ...p, translation: "" })) })); }}><option>简体中文</option><option>繁體中文</option><option>English</option><option>日本語</option></select>
+        </label>
+        <p className="settings-tip">密钥仅保留在当前页面内存中。翻译时，原文将发送到所选平台。切换平台会清除已输入的密钥。</p>
+        <div className="settings-actions"><button className="quiet-button" disabled={testing} onClick={testConnection}>{testing ? "正在测试…" : "测试连接"}</button><button className="primary-button" onClick={() => setSettingsOpen(false)}>完成</button></div>
+      </DialogContent>
+    </Dialog>
+  </div>;
+}
+
+
+
+
