@@ -1,42 +1,51 @@
 # mypaperread
 
-文献原文与模型译文对照阅读网站。
+一个用于对照阅读文献原文与模型译文的开源网站。支持导入 PDF 或公开网页，按页或连续滚动阅读。
 
 ## 功能
 
-- 导入本地可复制文本的 PDF，或公开的 PDF / 网页 URL。
-- PDF 页面渲染、文字提取、按页切换或上下连续滚动。
-- 双栏、三栏及单栏阅读；页码对应、搜索、缩放与 Markdown 导出。
-- 使用 OpenAI、Azure OpenAI、DeepSeek、OpenRouter、阿里云百炼、硅基流动、火山方舟、Anthropic Claude、Google Gemini，或自定义兼容 OpenAI 的接口翻译。
-- API Key 只存在于当前页面内存，刷新页面后需要重新输入。文献和译文也只保留在本次页面会话中。
+- 导入本地带文本层的 PDF，或公开的 PDF / 网页 URL。
+- PDF 页面渲染、文字提取、按页切换、上下连续滚动、搜索与缩放。
+- 单栏、双栏及三栏阅读，按文献页码对照原文和译文。
+- 使用 OpenAI、Azure OpenAI、DeepSeek、OpenRouter、阿里云百炼、硅基流动、火山方舟、Anthropic Claude、Google Gemini 或自定义兼容 OpenAI 的接口翻译。
+- 导出 Markdown；API Key、文献和译文只保留在当前页面会话中。
 
-## 本地运行
+## 快速开始
 
-Windows：双击 `start-local.cmd`，随后打开 **http://127.0.0.1:8787/**。保持命令窗口打开即可使用，按 Ctrl+C 停止。它运行已构建的本地网站，不需要 ChatGPT 登录。当前电脑已安装所需运行环境；复制到另一台电脑时，需要 Node.js 22.13+ 与 pnpm。
-
-也可以在项目目录运行：
+需要 Node.js 22.13+ 和 pnpm 11。克隆仓库后运行：
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
+pnpm run dev
+```
+
+浏览器打开 **http://localhost:5173/**。本地运行无需 ChatGPT 账号。Windows 用户也可以在安装依赖并完成首次构建后双击 `start-local.cmd`，打开 **http://127.0.0.1:8787/**；该窗口保持开启时网站可用。
+
+```sh
 pnpm run build
 pnpm run start
 ```
 
-日常修改源码时，可运行 `pnpm run dev` 并访问 **http://localhost:5173/**。部署使用 Cloudflare Workers 兼容构建：
+`build` 生成生产版本，`start` 在本机启动它。修改源码后重新构建即可更新生产版本。
+
+## 使用说明
+
+在网站中导入 PDF 或 URL，选择单栏、双栏或三栏，再选择左右翻页或上下滚动。翻译时，在设置中选择 API 平台、填写对应的 API Key 和模型名。不同平台需要各自有效的密钥；本项目不提供模型额度。
+
+扫描件 PDF 如果没有文本层，目前无法提取内容进行翻译。网页导入只读取公开页面文本；需要登录、禁止抓取或依赖复杂动态渲染的页面可能无法导入。API Key 不写入仓库或浏览器持久存储，刷新页面后需重新输入。翻译请求会发送到你选择的模型平台。
+
+## 开发与检查
 
 ```sh
+pnpm run lint
+pnpm run typecheck
 pnpm run build
 ```
 
-扫描件 PDF 若没有文本层，暂不支持 OCR 翻译。网页导入会读取公开页面文本；需要登录、禁止跨站抓取或采用复杂动态渲染的网站可能无法导入。
+项目使用 TypeScript、React、vinext、Vite、Tailwind CSS 和 PDF.js。应用页面在 `app/`，模型平台配置在 `lib/model-providers.ts`，翻译与 URL 导入接口在 `app/api/`。
 
-## 发布源码到 GitHub
+发现问题或希望贡献代码，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题请按 [SECURITY.md](SECURITY.md) 报告。
 
-先在 GitHub 创建一个名为 `mypaperread` 的**空白公开仓库**，创建时不要勾选自动生成 README、.gitignore 或许可证。然后在本目录运行，将 `你的用户名` 换成实际 GitHub 用户名：
+## 许可
 
-```sh
-git remote add github https://github.com/你的用户名/mypaperread.git
-git push -u github main
-```
-
-现有的 `origin` 仍指向当前网站的源码仓库；`github` 是新增的公开远端。后续修改后可以分别运行 `git push github main` 和 `git push origin main`。推送 GitHub 前请先选择并加入适合你的开源 `LICENSE`；仅将仓库设为公开，并不会自动授予他人修改和再分发权。当前 Git 历史中未发现 API Key 等凭据，`.openai/hosting.json` 只有站点项目标识。
+本项目以 [MIT License](LICENSE) 开源。`build/sites-vite-plugin.LICENSE` 和 `vendor/shadcn-tailwind-4.13.0.LICENSE.md` 保留了相应第三方代码的许可证。
