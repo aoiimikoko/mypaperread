@@ -4,6 +4,7 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { BookOpen, ChevronLeft, ChevronRight, Columns2, Download, FilePlus2, FileText, Languages, Link2, Search, Settings2, Sparkles, X } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { providerById, providers, type ProviderId } from "@/lib/model-providers";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 type Page = { heading: string; text: string; translation: string };
 type DocumentData = { title: string; type: "sample" | "pdf" | "web"; pages: Page[]; pdf?: Uint8Array };
@@ -12,6 +13,30 @@ const sample: DocumentData = { title: "Parallel Reading for Research", type: "sa
   { heading: "1. Introduction", text: "Research is increasingly collaborative and international. Yet language continues to shape which findings are discovered, discussed, and reused. Existing translation workflows often separate the translated output from the document itself, making it difficult to inspect figures, citations, and nuanced claims in context.", translation: "研究日益依赖跨国协作，但语言仍影响哪些成果能够被发现、讨论和复用。现有翻译流程常将译文与文档本身分离，使读者难以结合图表、引文及上下文核查细微论断。" },
   { heading: "2. A parallel reading workflow", text: "The reading surface should retain a stable relationship between the source and its translation. Page navigation, text search, and synchronized scrolling help readers locate a passage quickly. Translation remains an aid to interpretation; the original document stays visible for verification.", translation: "阅读界面应维持原文与译文之间稳定的对应关系。页码导航、文本搜索和同步滚动帮助读者快速定位段落。译文用于辅助理解，原始文档始终可见，便于核对。" },
 ] };
+const settingsStorageKey = "mypaperread-reader-settings-v1";
+
+type ReaderSettings = {
+  apiKey?: string;
+  provider?: ProviderId;
+  baseUrl?: string;
+  model?: string;
+  target?: string;
+  zoom?: number;
+  mode?: "parallel" | "triple" | "original" | "translation";
+  direction?: "paged" | "continuous";
+  rememberApiKey?: boolean;
+};
+
+function readStoredSettings(): ReaderSettings {
+  if (typeof window === "undefined") return {};
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(settingsStorageKey) || "{}") as unknown;
+    return saved && typeof saved === "object" ? saved as ReaderSettings : {};
+  } catch {
+    window.localStorage.removeItem(settingsStorageKey);
+    return {};
+  }
+}
 
 function PdfPage({ data, index, zoom }: { data: Uint8Array; index: number; zoom: number }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -33,7 +58,7 @@ function PdfPage({ data, index, zoom }: { data: Uint8Array; index: number; zoom:
     (async () => {
       try {
         const pdfjs = await import("pdfjs-dist");
-        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
         const pdf = await pdfjs.getDocument({ data: data.slice() }).promise;
         const page = await pdf.getPage(index + 1);
         if (cancelled || !canvas.current) return;
@@ -75,24 +100,31 @@ function ContinuousReader({ doc, mode, zoom, target, onPageVisible, onTranslate 
 
 export default function Home() {
   const [doc, setDoc] = useState<DocumentData>(sample);
+  const [savedSettings] = useState<ReaderSettings>(readStoredSettings);
   const [page, setPage] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [url, setUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [provider, setProvider] = useState<ProviderId>("openai");
-  const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
-  const [model, setModel] = useState("gpt-4o-mini");
-  const [target, setTarget] = useState("简体中文");
+  const [apiKey, setApiKey] = useState(savedSettings.rememberApiKey !== false ? savedSettings.apiKey || "" : "");
+  const [provider, setProvider] = useState<ProviderId>(savedSettings.provider && providerById(savedSettings.provider) ? savedSettings.provider : "openai");
+  const [baseUrl, setBaseUrl] = useState(savedSettings.baseUrl || "https://api.openai.com/v1");
+  const [model, setModel] = useState(savedSettings.model || "gpt-4o-mini");
+  const [target, setTarget] = useState(savedSettings.target || "简体中文");
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [progress, setProgress] = useState("");
-  const [zoom, setZoom] = useState(1);
-  const [mode, setMode] = useState<"parallel" | "triple" | "original" | "translation">("parallel");
-  const [direction, setDirection] = useState<"paged" | "continuous">("paged");
+  const [zoom, setZoom] = useState(typeof savedSettings.zoom === "number" && savedSettings.zoom >= .6 && savedSettings.zoom <= 1.8 ? savedSettings.zoom : 1);
+  const [mode, setMode] = useState<"parallel" | "triple" | "original" | "translation">(savedSettings.mode || "parallel");
+  const [direction, setDirection] = useState<"paged" | "continuous">(savedSettings.direction || "paged");
   const fileInput = useRef<HTMLInputElement>(null);
+  const [rememberApiKey, setRememberApiKey] = useState(savedSettings.rememberApiKey !== false);
+  useEffect(() => {
+    const saved: ReaderSettings = { provider, baseUrl, model, target, zoom, mode, direction, rememberApiKey };
+    if (rememberApiKey) saved.apiKey = apiKey;
+    window.localStorage.setItem(settingsStorageKey, JSON.stringify(saved));
+  }, [apiKey, baseUrl, direction, mode, model, provider, rememberApiKey, target, zoom]);
   useEffect(() => {
     type Tool = { registerTool: (tool: { name: string; title: string; description: string; inputSchema: object; annotations: { readOnlyHint: boolean }; execute: (input: unknown) => unknown }, options: { signal: AbortSignal }) => void | Promise<void> };
     const context = (window.document as Document & { modelContext?: Tool }).modelContext;
@@ -123,7 +155,7 @@ export default function Home() {
 
   async function readPdf(bytes: Uint8Array, name: string) {
     const pdfjs = await import("pdfjs-dist");
-    pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+    pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
     const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise;
     const pages: Page[] = [];
     for (let i = 1; i <= pdf.numPages; i++) {
@@ -244,7 +276,8 @@ export default function Home() {
         <label className="field-label">目标语言
           <select value={target} onChange={e => { setTarget(e.target.value); if (doc.type !== "sample") setDoc(current => ({ ...current, pages: current.pages.map(p => ({ ...p, translation: "" })) })); }}><option>简体中文</option><option>繁體中文</option><option>English</option><option>日本語</option></select>
         </label>
-        <p className="settings-tip">密钥仅保留在当前页面内存中。翻译时，原文将发送到所选平台。切换平台会清除已输入的密钥。</p>
+        <label className="remember-key"><input type="checkbox" checked={rememberApiKey} onChange={e => setRememberApiKey(e.target.checked)}/> 在此浏览器保存 API Key</label>
+        <p className="settings-tip">开启后，API Key 会以明文保存在此浏览器的本地存储中，刷新页面后可继续使用。翻译时，原文将发送到所选平台；切换平台会清除当前输入的密钥。</p>
         <div className="settings-actions"><button className="quiet-button" disabled={testing} onClick={testConnection}>{testing ? "正在测试…" : "测试连接"}</button><button className="primary-button" onClick={() => setSettingsOpen(false)}>完成</button></div>
       </DialogContent>
     </Dialog>
