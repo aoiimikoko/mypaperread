@@ -1,12 +1,12 @@
 "use client";
 
-import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, ChevronLeft, ChevronRight, Columns2, Download, FilePlus2, FileText, Languages, Link2, Search, Settings2, Sparkles, Trash2, X } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { providerById, providers, type ProviderId } from "@/lib/model-providers";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import PdfPage, { type PdfMark } from "./pdf-page";
-import { deletePaper, listPapers, loadPaper, savePaper, type SavedPaper } from "@/lib/library-db";
+import { deletePaper, listPapers, loadPaper, savePaper, type PaperSummary, type SavedPaper } from "@/lib/library-db";
 import { bodySegments } from "@/lib/paper-body";
 import { splitSentences, type SentencePair } from "@/lib/sentences";
 
@@ -82,9 +82,12 @@ function ContinuousReader({ doc, mode, zoom, target, marks, activeSentence, onSe
 export default function Home() {
   const [doc, setDoc] = useState<DocumentData>(sample);
   const [marks, setMarks] = useState<Record<number, PdfMark[]>>({});
-  const [library, setLibrary] = useState<SavedPaper[]>([]);
+  const [library, setLibrary] = useState<PaperSummary[]>([]);
   const [libraryReady, setLibraryReady] = useState(false);
   const deletingPaperIds = useRef(new Set<string>());
+  const pendingSave = useRef<SavedPaper | null>(null);
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const translationCache = useRef(new Map<string, string | string[]>());
   const [savedSettings] = useState<ReaderSettings>(readStoredSettings);
   const [page, setPage] = useState(0);
   const [activeSentence, setActiveSentence] = useState<{ page: number; index: number } | null>(null);
@@ -134,9 +137,20 @@ export default function Home() {
   useEffect(() => {
     if (!libraryReady || !doc.id || doc.type === "sample" || deletingPaperIds.current.has(doc.id)) return;
     const now = Date.now();
-    void savePaper({ id: doc.id, title: doc.title, type: doc.type, pages: doc.pages, marks, page, createdAt: doc.createdAt || now, updatedAt: now, sourceUrl: doc.sourceUrl })
-      .catch(cause => setNotice(cause instanceof Error ? cause.message : "阅读记录保存失败"));
+    const next: SavedPaper = { id: doc.id, title: doc.title, type: doc.type, pages: doc.pages, marks, page, createdAt: doc.createdAt || now, updatedAt: now, sourceUrl: doc.sourceUrl };
+    if (pendingSave.current && pendingSave.current.id !== next.id) void savePaper(pendingSave.current).catch(() => {});
+    pendingSave.current = next;
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => {
+      const paper = pendingSave.current;
+      pendingSave.current = null;
+      if (paper) void savePaper(paper).catch(cause => setNotice(cause instanceof Error ? cause.message : "阅读记录保存失败"));
+    }, 700);
   }, [doc, marks, page, libraryReady]);
+  useEffect(() => () => {
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    if (pendingSave.current) void savePaper(pendingSave.current);
+  }, []);
   useEffect(() => {
     const saved: ReaderSettings = { provider, baseUrl, model, target, zoom, mode, direction, rememberApiKey };
     if (rememberApiKey) saved.apiKey = apiKey;
@@ -265,6 +279,7 @@ export default function Home() {
     if (!paper || !window.confirm(`删除“${paper.title}”？本机保存的 PDF、译文和标注都会被删除。`)) return;
     deletingPaperIds.current.add(id);
     try {
+      if (pendingSave.current?.id === id) pendingSave.current = null;
       await deletePaper(id);
       const remaining = await listPapers();
       setLibrary(remaining);
@@ -280,24 +295,29 @@ export default function Home() {
     setMarks(current => ({ ...current, [index]: [...(current[index] || []), mark] }));
     setNotice("已标记选中内容");
   }
-  async function translateSelection(text: string): Promise<string> {
+  const translateSelection = useCallback(async (text: string): Promise<string> => {
     if (!apiKey.trim() || !model.trim()) {
       setSettingsOpen(true);
       throw new Error("请先在设置中填写模型 API Key 和模型 ID");
     }
+    const cacheKey = `single\u0000${provider}\u0000${model}\u0000${target}\u0000${text}`;
+    const cached = translationCache.current.get(cacheKey);
+    if (typeof cached === "string") return cached;
     const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, key: apiKey, model, target, provider, baseUrl }) });
     const result = await response.json() as { translation?: string; error?: string };
     if (!response.ok || !result.translation) throw new Error(result.error || "选中内容翻译失败");
+    translationCache.current.set(cacheKey, result.translation);
     return result.translation;
-  }
+  }, [apiKey, baseUrl, model, provider, target]);
   async function translateAligned(sentences: string[]): Promise<string[]> {
+    const cacheKey = `aligned\u0000${provider}\u0000${model}\u0000${target}\u0000${sentences.join("\u0001")}`;
+    const cached = translationCache.current.get(cacheKey);
+    if (Array.isArray(cached)) return cached;
     const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sentences, key: apiKey, model, target, provider, baseUrl }) });
     const result = await response.json() as { translations?: string[]; error?: string };
-    if (response.ok && result.translations?.length === sentences.length) return result.translations;
-    if (result.error !== "模型未按句返回译文，请重试或更换模型") throw new Error(result.error || "逐句翻译失败");
-    const individual: string[] = [];
-    for (const sentence of sentences) individual.push(await translateSelection(sentence));
-    return individual;
+    if (!response.ok || result.translations?.length !== sentences.length) throw new Error(result.error || "逐句翻译失败");
+    translationCache.current.set(cacheKey, result.translations);
+    return result.translations;
   }
   async function translate(all: boolean, atIndex = page) {
     if (!apiKey.trim() || !model.trim()) { setSettingsOpen(true); setNotice("请先填写模型 API Key 和模型 ID"); return; }
@@ -306,16 +326,17 @@ export default function Home() {
     if (!indexes.length) { setNotice("未识别到摘要至结论的正文。可在 PDF 上选中文字单独翻译。"); return; }
     setBusy(true);
     try {
-      for (let step = 0; step < indexes.length; step++) {
-        const index = indexes[step];
-        setProgress(`正在翻译 ${step + 1} / ${indexes.length}`);
-        if (doc.type === "pdf") {
+      if (doc.type === "pdf") {
+        let next = 0;
+        let completed = 0;
+        let stopped = false;
+        const translatePage = async (index: number) => {
           const sentences = splitSentences(sources[index]);
           const pairs: SentencePair[] = [];
           for (let offset = 0; offset < sentences.length;) {
             const batch: string[] = [];
             let length = 0;
-            while (offset < sentences.length && batch.length < 12 && (length + sentences[offset].length <= 3000 || !batch.length)) {
+            while (offset < sentences.length && batch.length < 20 && (length + sentences[offset].length <= 6500 || !batch.length)) {
               batch.push(sentences[offset++]);
               length += batch[batch.length - 1].length;
             }
@@ -323,8 +344,25 @@ export default function Home() {
             batch.forEach((source, position) => pairs.push({ source, translation: translated[position] }));
           }
           setDoc(current => current.id === doc.id ? ({ ...current, pages: current.pages.map((item, i) => i === index ? { ...item, translation: pairs.map(pair => pair.translation).join(" "), sentencePairs: pairs } : item) }) : current);
-          continue;
-        }
+          completed++;
+          setProgress(`已翻译 ${completed} / ${indexes.length} 页`);
+        };
+        const worker = async () => {
+          while (!stopped && next < indexes.length) {
+            const index = indexes[next++];
+            try { await translatePage(index); }
+            catch (cause) { stopped = true; throw cause; }
+          }
+        };
+        const results = await Promise.allSettled(Array.from({ length: Math.min(2, indexes.length) }, () => worker()));
+        const failed = results.find(result => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        setNotice(all ? "正文翻译完成" : "当前页翻译完成");
+        return;
+      }
+      for (let step = 0; step < indexes.length; step++) {
+        const index = indexes[step];
+        setProgress(`正在翻译 ${step + 1} / ${indexes.length}`);
         const chunks = sources[index].match(/[\s\S]{1,8000}/g) || [];
         const translated: string[] = [];
         for (const chunk of chunks) {
@@ -335,7 +373,7 @@ export default function Home() {
         }
         setDoc(current => ({ ...current, pages: current.pages.map((p, i) => i === index ? { ...p, translation: translated.join("\n\n") } : p) }));
       }
-      setNotice(all ? (doc.type === "pdf" ? "正文翻译完成" : "全文翻译完成") : "当前页翻译完成");
+      setNotice(all ? "全文翻译完成" : "当前页翻译完成");
     } catch (error) { setNotice(error instanceof Error ? error.message : "翻译失败"); }
     finally { setBusy(false); setProgress(""); }
   }
@@ -361,7 +399,7 @@ export default function Home() {
 
   return <div className="app-shell">
     <aside className="rail"><div className="brand-mark"><BookOpen size={21}/></div><button className="rail-button active" aria-label="阅读台"><Columns2 size={21}/></button><button className="rail-button" aria-label="导入文献" onClick={() => setImportOpen(true)}><FilePlus2 size={21}/></button><button className="rail-button" aria-label="翻译设置" onClick={() => setSettingsOpen(true)}><Settings2 size={21}/></button><div className="rail-bottom">M</div></aside>
-    <aside className="library"><div className="library-title"><span className="eyebrow">mypaperread</span><h1>我的文献</h1></div><button className="import-button" onClick={() => setImportOpen(true)}><FilePlus2 size={18}/> 导入文献 <span>+</span></button><div className="library-section">已保存文献 <span>{library.length}</span></div><div className="library-list">{library.length ? library.map(item => <div className="library-entry" key={item.id}><button className={`library-item${doc.id === item.id ? " current" : ""}`} onClick={() => openSavedPaper(item.id)}><span className="document-icon"><FileText size={19}/></span><span><strong>{item.title}</strong><small>{item.type === "pdf" ? "PDF 文献" : "网页文献"} · {item.pages.length} {item.type === "pdf" ? "页" : "段"}</small></span></button><button className="library-delete" aria-label={`删除 ${item.title}`} title="删除文献" onClick={() => removeSavedPaper(item.id)}><Trash2 size={15}/></button></div>) : <p className="library-empty">导入的文献会保存在此浏览器中。</p>}</div><div className="library-hint"><Sparkles size={17}/><p>导入 PDF 或网页链接，开始原文与译文对照阅读。</p></div><div className="library-footer"><span className="footer-dot"/> mypaperread 阅读工作台</div></aside>
+    <aside className="library"><div className="library-title"><span className="eyebrow">mypaperread</span><h1>我的文献</h1></div><button className="import-button" onClick={() => setImportOpen(true)}><FilePlus2 size={18}/> 导入文献 <span>+</span></button><div className="library-section">已保存文献 <span>{library.length}</span></div><div className="library-list">{library.length ? library.map(item => <div className="library-entry" key={item.id}><button className={`library-item${doc.id === item.id ? " current" : ""}`} onClick={() => openSavedPaper(item.id)}><span className="document-icon"><FileText size={19}/></span><span><strong>{item.title}</strong><small>{item.type === "pdf" ? "PDF 文献" : "网页文献"} · {item.pageCount} {item.type === "pdf" ? "页" : "段"}</small></span></button><button className="library-delete" aria-label={`删除 ${item.title}`} title="删除文献" onClick={() => removeSavedPaper(item.id)}><Trash2 size={15}/></button></div>) : <p className="library-empty">导入的文献会保存在此浏览器中。</p>}</div><div className="library-hint"><Sparkles size={17}/><p>导入 PDF 或网页链接，开始原文与译文对照阅读。</p></div><div className="library-footer"><span className="footer-dot"/> mypaperread 阅读工作台</div></aside>
     <main className={`main-area direction-${direction}`}><header className="topbar"><div className="breadcrumbs">mypaperread <ChevronRight size={15}/> <strong>{doc.title}</strong></div><div className="top-actions"><button className="soft-button library-toggle" onClick={() => setLibraryOpen(true)}><BookOpen size={16}/> 文献库</button><button className="soft-button" onClick={() => setImportOpen(true)}><FilePlus2 size={16}/> 导入</button><button className="icon-button" aria-label="设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button></div></header>
       <section className="document-header"><div className="doc-kicker"><span className="file-chip">{doc.type === "sample" ? "示例文献" : doc.type === "pdf" ? "PDF" : "网页"}</span><span>双语对照阅读</span></div><div className="title-row"><div><h2>{doc.title}</h2><p>{doc.pages.length} {doc.type === "pdf" ? "页" : "段"} · 原文与译文对照</p></div><div className="title-actions"><button className="quiet-button" disabled={busy || doc.type === "sample"} onClick={() => translate(false)}><Languages size={17}/> 翻译当前页</button><button className="primary-button" disabled={busy || doc.type === "sample"} onClick={() => translate(true)}><Sparkles size={17}/> {doc.type === "pdf" ? "翻译正文" : "翻译全文"}</button></div></div></section>
       <div className="toolbar"><div className="toolbar-group"><button className="tool-icon" aria-label="上一页" disabled={page === 0} onClick={() => goTo(page - 1)}><ChevronLeft size={18}/></button><span className="page-count">{doc.type === "pdf" ? "页码" : "段落"} <strong>{page + 1}</strong> / {doc.pages.length}</span><button className="tool-icon" aria-label="下一页" disabled={page === doc.pages.length - 1} onClick={() => goTo(page + 1)}><ChevronRight size={18}/></button></div><div className="toolbar-spacer"/><label className="search-field"><Search size={17}/><input aria-label="搜索文献" placeholder="搜索当前文献" value={query} onChange={e => setQuery(e.target.value)}/></label>{query && <span className="match-count" onClick={() => matches.length && goTo(matches[0])}>{matches.length} 处匹配</span>}<select className="tool-select" aria-label="阅读方向" value={direction} onChange={e => setDirection(e.target.value as "paged" | "continuous")}><option value="paged">按页切换</option><option value="continuous">上下滚动</option></select><div className="toolbar-divider"/><select className="tool-select" aria-label="阅读布局" value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="parallel">双栏对照</option><option value="triple">三栏阅读</option><option value="original">仅原文</option><option value="translation">仅译文</option></select><button className="tool-icon" aria-label="缩小" onClick={() => setZoom(Math.max(.6, zoom - .15))}>−</button><span className="zoom-label">{Math.round(zoom * 100)}%</span><button className="tool-icon" aria-label="放大" onClick={() => setZoom(Math.min(1.8, zoom + .15))}>+</button><button className="tool-icon" aria-label="导出 Markdown" onClick={download}><Download size={18}/></button></div>
@@ -370,7 +408,7 @@ export default function Home() {
     </main>
     {notice && <div role="status" className="toast">{notice}<button aria-label="关闭提示" onClick={() => setNotice("")}><X size={15}/></button></div>}
     {progress && <div role="status" className="progress-toast">{progress}</div>}
-    <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}><DialogContent className="modal-content library-dialog"><DialogHeader><DialogTitle>本地文献库</DialogTitle><DialogDescription>文献保存在当前浏览器中，刷新后可继续阅读。</DialogDescription></DialogHeader><div className="library-dialog-list">{library.length ? library.map(item => <div className="library-dialog-entry" key={item.id}><button onClick={() => openSavedPaper(item.id)}><FileText size={18}/><span><strong>{item.title}</strong><small>{item.type === "pdf" ? "PDF" : "网页"} · {item.pages.length} {item.type === "pdf" ? "页" : "段"}</small></span></button><button className="library-delete" aria-label={"删除 " + item.title} onClick={() => removeSavedPaper(item.id)}><Trash2 size={16}/></button></div>) : <p className="library-empty">还没有保存的文献。导入 PDF 或网页后会显示在这里。</p>}</div></DialogContent></Dialog>
+    <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}><DialogContent className="modal-content library-dialog"><DialogHeader><DialogTitle>本地文献库</DialogTitle><DialogDescription>文献保存在当前浏览器中，刷新后可继续阅读。</DialogDescription></DialogHeader><div className="library-dialog-list">{library.length ? library.map(item => <div className="library-dialog-entry" key={item.id}><button onClick={() => openSavedPaper(item.id)}><FileText size={18}/><span><strong>{item.title}</strong><small>{item.type === "pdf" ? "PDF" : "网页"} · {item.pageCount} {item.type === "pdf" ? "页" : "段"}</small></span></button><button className="library-delete" aria-label={"删除 " + item.title} onClick={() => removeSavedPaper(item.id)}><Trash2 size={16}/></button></div>) : <p className="library-empty">还没有保存的文献。导入 PDF 或网页后会显示在这里。</p>}</div></DialogContent></Dialog>
     <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="modal-content"><DialogHeader><DialogTitle>导入文献</DialogTitle><DialogDescription>选择 PDF 文件，或粘贴公开网页 / PDF 链接。</DialogDescription></DialogHeader><input ref={fileInput} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile}/><button className="drop-zone" disabled={busy} onClick={() => fileInput.current?.click()}><FilePlus2 size={30}/><strong>点击选择 PDF 文件</strong><span>支持可复制文本的 PDF，建议小于 30 MB</span></button><div className="or-line">或使用链接</div><label className="url-field"><Link2 size={17}/><input aria-label="文献链接" placeholder="https://example.com/paper.pdf" value={url} onChange={e => setUrl(e.target.value)}/></label><button className="primary-button wide" disabled={busy || !url.trim()} onClick={importUrl}>导入链接</button></DialogContent></Dialog>
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
       <DialogContent className="modal-content">
@@ -379,7 +417,7 @@ export default function Home() {
           <select value={provider} onChange={e => {
             const next = providerById(e.target.value)!;
             setProvider(next.id); setBaseUrl(next.baseUrl); setApiKey("");
-            setModel(next.id === "openai" ? "gpt-4o-mini" : next.id === "deepseek" ? "deepseek-v4-flash" : "");
+            setModel(next.id === "openai" ? "gpt-4o-mini" : next.id === "deepseek" ? "deepseek-flash" : "");
           }}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
         </label>
         {["openai", "azure"].includes(providerById(provider)?.protocol || "") && <label className="field-label">接口地址

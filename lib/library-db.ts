@@ -13,6 +13,7 @@ export type SavedPaper = {
   updatedAt: number;
   sourceUrl?: string;
 };
+export type PaperSummary = Pick<SavedPaper, "id" | "title" | "type" | "createdAt" | "updatedAt" | "sourceUrl"> & { pageCount: number };
 
 const databaseName = "mypaperread-library";
 const databaseVersion = 1;
@@ -52,12 +53,15 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
-export async function listPapers(): Promise<SavedPaper[]> {
+export async function listPapers(): Promise<PaperSummary[]> {
   await pendingWrite;
   const database = await openDatabase();
   try {
     const papers = await requestResult(database.transaction("papers", "readonly").objectStore("papers").getAll()) as SavedPaper[];
-    return papers.sort((a, b) => b.updatedAt - a.updatedAt);
+    return papers.sort((a, b) => b.updatedAt - a.updatedAt).map(paper => ({
+      id: paper.id, title: paper.title, type: paper.type, createdAt: paper.createdAt,
+      updatedAt: paper.updatedAt, sourceUrl: paper.sourceUrl, pageCount: paper.pages.length,
+    }));
   } finally { database.close(); }
 }
 

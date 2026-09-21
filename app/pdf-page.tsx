@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { sentenceItemRanges, type ItemRange, type SentencePair } from "@/lib/sentences";
@@ -27,7 +27,7 @@ function getPdf(data: Uint8Array): Promise<PDFDocumentProxy> {
   return loading;
 }
 
-export default function PdfPage({ data, index, zoom, marks, sentencePairs, activeSentenceIndex, onSentenceSelect, onMark, onTranslateSelection }: {
+type PdfPageProps = {
   data: Uint8Array;
   index: number;
   zoom: number;
@@ -37,7 +37,9 @@ export default function PdfPage({ data, index, zoom, marks, sentencePairs, activ
   onSentenceSelect: (index: number) => void;
   onMark: (mark: PdfMark) => void;
   onTranslateSelection: (text: string) => Promise<string>;
-}) {
+};
+
+function PdfPage({ data, index, zoom, marks, sentencePairs, activeSentenceIndex, onSentenceSelect, onMark, onTranslateSelection }: PdfPageProps) {
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const textLayer = useRef<HTMLDivElement>(null);
@@ -58,8 +60,17 @@ export default function PdfPage({ data, index, zoom, marks, sentencePairs, activ
     const resize = new ResizeObserver(entries => setWidth(Math.floor(entries[0]?.contentRect.width || 0)));
     resize.observe(element);
     const intersection = new IntersectionObserver(entries => {
-      if (entries[0]?.isIntersecting) { setVisible(true); intersection.disconnect(); }
-    }, { rootMargin: "900px" });
+      const nextVisible = !!entries[0]?.isIntersecting;
+      setVisible(nextVisible);
+      if (!nextVisible) {
+        if (canvas.current) { canvas.current.width = 1; canvas.current.height = 1; }
+        textLayer.current?.replaceChildren();
+        sentenceRanges.current = [];
+        selectedRange.current = null;
+        setSelection(null);
+        setRendered(0);
+      }
+    }, { rootMargin: "650px 0px" });
     intersection.observe(element);
     return () => { resize.disconnect(); intersection.disconnect(); };
   }, []);
@@ -86,7 +97,7 @@ export default function PdfPage({ data, index, zoom, marks, sentencePairs, activ
         if (cancelled || !canvas.current) return;
         const original = page.getViewport({ scale: 1 });
         const viewport = page.getViewport({ scale: width / original.width * zoom });
-        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2.5);
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
         const element = canvas.current;
         element.width = Math.ceil(viewport.width * pixelRatio);
         element.height = Math.ceil(viewport.height * pixelRatio);
@@ -102,7 +113,7 @@ export default function PdfPage({ data, index, zoom, marks, sentencePairs, activ
         const textRender = new pdfjs.TextLayer({ textContentSource: await page.getTextContent(), container: layerElement, viewport });
         layer = textRender;
         await textRender.render();
-        if (!cancelled) setRendered(value => value + 1);
+        if (!cancelled) { page.cleanup(); setRendered(value => value + 1); }
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? `PDF 页面渲染失败：${cause.message}` : "PDF 页面渲染失败");
       }
@@ -224,3 +235,11 @@ export default function PdfPage({ data, index, zoom, marks, sentencePairs, activ
     </div>}
   </div>;
 }
+
+export default memo(PdfPage, (previous, next) => previous.data === next.data
+  && previous.index === next.index
+  && previous.zoom === next.zoom
+  && previous.marks === next.marks
+  && previous.sentencePairs === next.sentencePairs
+  && previous.activeSentenceIndex === next.activeSentenceIndex
+  && previous.onTranslateSelection === next.onTranslateSelection);
