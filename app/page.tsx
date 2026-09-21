@@ -309,13 +309,34 @@ export default function Home() {
     translationCache.current.set(cacheKey, result.translation);
     return result.translation;
   }, [apiKey, baseUrl, model, provider, target]);
-  async function translateAligned(sentences: string[]): Promise<string[]> {
+  async function translateAligned(sentences: string[], allowSplit = true): Promise<string[]> {
     const cacheKey = `aligned\u0000${provider}\u0000${model}\u0000${target}\u0000${sentences.join("\u0001")}`;
     const cached = translationCache.current.get(cacheKey);
     if (Array.isArray(cached)) return cached;
     const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sentences, key: apiKey, model, target, provider, baseUrl }) });
     const result = await response.json() as { translations?: string[]; error?: string };
-    if (!response.ok || result.translations?.length !== sentences.length) throw new Error(result.error || "逐句翻译失败");
+    if (!response.ok || result.translations?.length !== sentences.length) {
+      const formatError = result.error === "模型未按句返回译文，请重试或更换模型" || response.ok;
+      if (!formatError) throw new Error(result.error || "逐句翻译失败");
+      if (allowSplit && sentences.length > 8) {
+        const middle = Math.ceil(sentences.length / 2);
+        const [left, right] = await Promise.all([translateAligned(sentences.slice(0, middle), false), translateAligned(sentences.slice(middle), false)]);
+        const translations = [...left, ...right];
+        translationCache.current.set(cacheKey, translations);
+        return translations;
+      }
+      const translations = Array<string>(sentences.length);
+      let next = 0;
+      const worker = async () => {
+        while (next < sentences.length) {
+          const index = next++;
+          translations[index] = await translateSelection(sentences[index]);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, sentences.length) }, () => worker()));
+      translationCache.current.set(cacheKey, translations);
+      return translations;
+    }
     translationCache.current.set(cacheKey, result.translations);
     return result.translations;
   }

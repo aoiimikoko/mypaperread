@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { providerById } from "@/lib/model-providers";
+import { parseAlignedTranslations } from "@/lib/aligned-translation";
 
 export const runtime = "edge";
 
@@ -76,13 +77,10 @@ export async function POST(request: NextRequest) {
       : provider.protocol === "gemini"
         ? data.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("")
         : data.choices?.[0]?.message?.content)?.trim();
-    if (!translation) return NextResponse.json({ error: "平台没有返回译文，请检查模型 ID" }, { status: 502 });
+    if (!translation) return NextResponse.json({ error: aligned ? "模型未按句返回译文，请重试或更换模型" : "平台没有返回译文，请检查模型 ID" }, { status: 502 });
     if (aligned) {
-      try {
-        const parsed = JSON.parse(translation.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")) as unknown;
-        const values = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && "translations" in parsed ? (parsed as { translations?: unknown }).translations : null;
-        if (Array.isArray(values) && values.length === aligned.length && values.every(item => typeof item === "string" && item.trim())) return NextResponse.json({ translations: values });
-      } catch {}
+      const translations = parseAlignedTranslations(translation, aligned.length);
+      if (translations) return NextResponse.json({ translations });
       return NextResponse.json({ error: "模型未按句返回译文，请重试或更换模型" }, { status: 502 });
     }
     return NextResponse.json({ translation });

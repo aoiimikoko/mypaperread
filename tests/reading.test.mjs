@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { bodySegments } from "../lib/paper-body.ts";
 import { sentenceItemRanges, splitSentences } from "../lib/sentences.ts";
+import { parseAlignedTranslations } from "../lib/aligned-translation.ts";
 
 test("PDF body excludes page furniture and ends before references", () => {
   const pages = [
@@ -23,4 +24,12 @@ test("sentence matching spans multiple PDF text items", () => {
     { startItem: 0, startOffset: 0, endItem: 1, endOffset: 14 },
     { startItem: 2, startOffset: 0, endItem: 3, endOffset: 8 },
   ]);
+});
+
+test("aligned translations accept common model response shapes", () => {
+  assert.deepEqual(parseAlignedTranslations('{"translations":["译文一","译文二"]}', 2), ["译文一", "译文二"]);
+  assert.deepEqual(parseAlignedTranslations('```json\n{"results":[{"translation":"译文一"},{"translated_text":"译文二"}]}\n```', 2), ["译文一", "译文二"]);
+  assert.deepEqual(parseAlignedTranslations('说明如下：\n{"0":"译文一","1":"译文二"}\n完成。', 2), ["译文一", "译文二"]);
+  assert.deepEqual(parseAlignedTranslations('1. 译文一\n2）译文二', 2), ["译文一", "译文二"]);
+  assert.equal(parseAlignedTranslations('{"translations":["只有一句"]}', 2), null);
 });
