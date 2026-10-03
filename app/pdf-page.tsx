@@ -16,7 +16,7 @@ export type PdfMark = {
 type Selection = { text: string; top: number; left: number };
 const documentCache = new WeakMap<Uint8Array, Promise<PDFDocumentProxy>>();
 
-function getPdf(data: Uint8Array): Promise<PDFDocumentProxy> {
+export function getPdf(data: Uint8Array): Promise<PDFDocumentProxy> {
   const cached = documentCache.get(data);
   if (cached) return cached;
   const loading = import("pdfjs-dist").then(pdfjs => {

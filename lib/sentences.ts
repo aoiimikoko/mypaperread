@@ -14,6 +14,7 @@ const captionStart = /\b(?:fig(?:ure)?|table)\s*\d+[.:]?|(?:图|表)\s*\d+[.:：
 export function isFormulaText(text: string): boolean {
   const compact = text.replace(/\s+/g, "");
   if (!compact) return false;
+  if (/\\begin\{(?:[pbBvV]?matrix|aligned|cases)\}|\\(?:frac|sqrt|dot|sum|int)\b/.test(text)) return true;
   const replacementGlyphs = (compact.match(/[□�]/g) || []).length;
   const operators = (compact.match(/[=+−–*/×÷<>≤≥≈≠∑∏∫√∞^_()[\]{}|∂∇∈∉∪∩⊂⊆⊤±∓·⋯…]/g) || []).length;
   const digits = (compact.match(/\d/g) || []).length;
@@ -24,6 +25,7 @@ export function isFormulaText(text: string): boolean {
   const symbolicTokens = tokens.filter(token => /^(?:[A-Za-zΑ-Ωα-ωξΔδ](?:_[A-Za-z0-9]+|\d+)?|[−+]?\d+(?:\.\d+)?|[()[\]{}=+−–*/×÷<>≤≥≈≠^_|∂∇∈∉∪∩⊂⊆⊤±∓·⋯…]+)$/.test(token)).length;
   const symbolicLine = tokens.length >= 4 && symbolicTokens / tokens.length >= .55 && operators + digits >= 4 && longWords.length < 3;
   return replacementGlyphs >= 2
+    || (/^[.˙\s]*[A-Za-zΑ-Ωα-ωξΔδ][A-Za-zΑ-Ωα-ωξΔδ0-9_\s]{0,16}[=≈]/.test(text) && longWords.length < 4)
     || (/[=≈≤≥]/.test(compact) && operators + digits >= 6 && longWords.length < 5)
     || (operators + digits >= 14 && longWords.length < 7)
     || (isolatedVariables.length >= 5 && operators + digits >= 5 && longWords.length < 4)
@@ -63,13 +65,45 @@ export function isTranslationRefusal(text: string): boolean {
 export function academicUnits(text: string): AcademicUnit[] {
   const normalized = text.replace(/\u00ad/g, "").replace(/([A-Za-z])-\s*\n\s*([a-z])/g, "$1$2");
   const lines = normalized.split(/\n+/).map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  // PDF charts often arrive as one tick or legend per line. Classify the whole
+  // short-text region before formula continuation can absorb those fragments.
+  const visualLines = lines.map(line => captionStart.test(line) && line.search(captionStart) === 0);
+  for (let index = 0; index < lines.length; index++) {
+    if (!visualLines[index] || /[.!?。！？]$/.test(lines[index])) continue;
+    let next = index + 1;
+    while (next < lines.length && next < index + 5 && !headingLine.test(lines[next]) && !numberedHeading.test(lines[next]) && !/[=≈≤≥]/.test(lines[next])) {
+      visualLines[next] = true;
+      if (/[.!?。！？]$/.test(lines[next++])) break;
+    }
+    index = next - 1;
+  }
+  const visualFragment = (line: string) => !headingLine.test(line) && !numberedHeading.test(line)
+    && !/[=≈≤≥\\]/.test(line) && line.length < 110
+    && (line.match(/[A-Za-z]{4,}|[\p{Script=Han}]{2,}/gu) || []).length < 4;
+  for (let start = 0; start < lines.length;) {
+    if (!visualFragment(lines[start])) { start++; continue; }
+    let end = start;
+    while (end < lines.length && visualFragment(lines[end])) end++;
+    const region = lines.slice(start, end);
+    const hasLegend = region.some(line => /\b(?:PID|MPC|IMPC)(?:-\w+)?\b|^reference$/i.test(line));
+    const hasCaption = visualLines[end] || visualLines[start - 1];
+    const numericLines = region.filter(line => /^[-−\d.\s%]+$/.test(line)).length;
+    const nextToEquation = /[=≈≤≥]/.test(lines[start - 1] || "") || /[=≈≤≥]/.test(lines[end] || "");
+    if (hasLegend || hasCaption || numericLines >= 4 && !nextToEquation) {
+      for (let index = start; index < end; index++) visualLines[index] = true;
+    }
+    start = end;
+  }
   const formulaLines = lines.map(line => isFormulaText(line));
   const fragment = (line: string) => {
     const longWords = line.match(/[A-Za-z\p{Script=Han}]{3,}/gu) || [];
     return line.length <= 100 && !/[.!?。！？]$/.test(line) && longWords.length < 3 && /[A-Za-zΑ-Ωα-ωξΔδ0-9=+−–*/×÷<>≤≥≈≠()[\]{}_^|∂∇⊤□�]/.test(line);
   };
   for (let index = 0; index < lines.length; index++) {
-    if (!formulaLines[index] && fragment(lines[index]) && (formulaLines[index - 1] || formulaLines[index + 1])) formulaLines[index] = true;
+    if (!visualLines[index] && !formulaLines[index] && fragment(lines[index]) && (formulaLines[index - 1] && !visualLines[index - 1] || formulaLines[index + 1] && !visualLines[index + 1])) formulaLines[index] = true;
+  }
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (!visualLines[index] && !formulaLines[index] && fragment(lines[index]) && formulaLines[index + 1] && !visualLines[index + 1]) formulaLines[index] = true;
   }
   const units: AcademicUnit[] = [];
   let prose = "";
@@ -87,6 +121,7 @@ export function academicUnits(text: string): AcademicUnit[] {
   };
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
+    if (visualLines[lineIndex]) { addNonProse(line, "visual"); continue; }
     if (headingLine.test(line) || numberedHeading.test(line)) { flush(); units.push({ source: line, translate: true }); continue; }
     const captionAt = line.search(captionStart);
     if (captionAt === 0 || captionAt > 0 && isVisualDataText(line.slice(0, captionAt))) {

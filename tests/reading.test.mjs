@@ -82,3 +82,28 @@ test("broken matrices become a concise source-reference and refusal boilerplate 
 test("plain-text worker failures become readable errors", async () => {
   await assert.rejects(() => readJsonResponse(new Response("Your worker exceeded a limit", { status: 503 })), /HTTP 503/);
 });
+
+test("chart tick rows and legends never become formula blocks", () => {
+  const units = academicUnits("(a) (b)\n0.0\n0.2\n0.4\n0.6\nC\nfl\nt /s\nPID-TED\nMPC-TED\nIMPC-TED\nFigure 18. Adhesion rate curve of each wheel.\n6. Conclusions\nThe controller remains stable.");
+  assert.equal(units.filter(unit => unit.kind === "formula").length, 0);
+  assert.equal(units.filter(unit => unit.kind === "visual").length, 1);
+  assert.ok(units.some(unit => unit.translate && unit.source === "The controller remains stable."));
+});
+
+test("matrix fragments before an equation stay inside its formula block", () => {
+  const units = academicUnits("The model follows:\nx\ny\nθ\n= v cos ( β + θ )\nThe state changes over time.");
+  assert.equal(units[1].kind, "formula");
+  assert.match(units[1].source, /^x\ny\nθ\n=/);
+});
+
+test("short equations and LaTeX matrix environments are formulas", () => {
+  assert.equal(isFormulaText("X = f ( X , u ) (11)"), true);
+  assert.equal(isFormulaText(String.raw`\begin{bmatrix}`), true);
+});
+
+test("multiline captions are skipped while subsequent body text is translated", () => {
+  const units = academicUnits("Figure 18. Adhesion rate curve: (a) left front wheel;\n(b) right front wheel; (c) left rear wheel; (d) right rear wheel.\nThe controller remains stable under high adhesion.");
+  assert.equal(units[0].kind, "visual");
+  assert.match(units[0].source, /right rear wheel/);
+  assert.equal(units[1].translate, true);
+});
