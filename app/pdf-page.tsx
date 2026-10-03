@@ -176,7 +176,27 @@ function PdfPage({ data, index, zoom, marks, sentencePairs, activeSentenceIndex,
       if (sentence >= 0) onSentenceSelect(sentence);
     }
     if (!selected || !range) { setSelection(null); selectedRange.current = null; return; }
-    const text = current?.toString().trim() || "";
+    const start = point(range.startContainer, range.startOffset);
+    const end = point(range.endContainer, range.endOffset);
+    let text = "";
+    let previousRect: DOMRect | null = null;
+    if (start && end) {
+      for (let itemIndex = start.item; itemIndex <= end.item; itemIndex++) {
+        const item = items[itemIndex];
+        const value = item.textContent || "";
+        const part = value.slice(itemIndex === start.item ? start.offset : 0, itemIndex === end.item ? end.offset : value.length);
+        if (!part) continue;
+        const rect = item.getBoundingClientRect();
+        if (text && previousRect) {
+          const newLine = Math.abs(rect.top - previousRect.top) > Math.max(2, Math.min(rect.height, previousRect.height) * .55);
+          if (/[-‐‑]$/.test(text) && /^[a-z]/.test(part)) text = text.slice(0, -1);
+          else text += newLine ? "\n" : /\s$/.test(text) || /^\s/.test(part) ? "" : " ";
+        }
+        text += part;
+        previousRect = rect;
+      }
+    } else text = current?.toString() || "";
+    text = text.trim();
     if (!text) { setSelection(null); return; }
     const rect = range.getBoundingClientRect();
     selectedRange.current = range.cloneRange();

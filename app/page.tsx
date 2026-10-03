@@ -8,7 +8,7 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import PdfPage, { type PdfMark } from "./pdf-page";
 import { deletePaper, listPapers, loadPaper, savePaper, type PaperSummary, type SavedPaper } from "@/lib/library-db";
 import { bodySegments } from "@/lib/paper-body";
-import { splitSentences, type SentencePair } from "@/lib/sentences";
+import { academicUnits, normalizeAcademicText, type SentencePair } from "@/lib/sentences";
 
 type Page = { heading: string; text: string; translation: string; sentencePairs?: SentencePair[] };
 type DocumentData = { id?: string; title: string; type: "sample" | "pdf" | "web"; pages: Page[]; pdf?: Uint8Array; createdAt?: number; sourceUrl?: string };
@@ -47,7 +47,7 @@ function TranslatedContent({ item, pageIndex, activeSentence, onSentenceSelect, 
   onSentenceSelect: (page: number, index: number) => void; zoom: number; showHint: boolean;
 }) {
   return <><p style={{ fontSize: `${16 * zoom}px` }}>{item.sentencePairs?.length
-    ? item.sentencePairs.map((pair, index) => <span key={index} className={`linked-sentence${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
+    ? item.sentencePairs.map((pair, index) => <span key={index} className={`linked-sentence${pair.kind === "formula" ? " linked-formula" : ""}${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
     : item.translation}</p>{showHint && item.translation && !item.sentencePairs?.length && <small className="alignment-hint">重新翻译此页可启用逐句对照。</small>}</>;
 }
 
@@ -300,27 +300,33 @@ export default function Home() {
       setSettingsOpen(true);
       throw new Error("请先在设置中填写模型 API Key 和模型 ID");
     }
-    const cacheKey = `single\u0000${provider}\u0000${model}\u0000${target}\u0000${text}`;
-    const cached = translationCache.current.get(cacheKey);
-    if (typeof cached === "string") return cached;
-    const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, key: apiKey, model, target, provider, baseUrl }) });
-    const result = await response.json() as { translation?: string; error?: string };
-    if (!response.ok || !result.translation) throw new Error(result.error || "选中内容翻译失败");
-    translationCache.current.set(cacheKey, result.translation);
-    return result.translation;
+    const units = academicUnits(text);
+    const translated = await Promise.all(units.map(async unit => {
+      if (!unit.translate) return unit.source;
+      const source = normalizeAcademicText(unit.source);
+      const cacheKey = `single\u0000${provider}\u0000${model}\u0000${target}\u0000${source}`;
+      const cached = translationCache.current.get(cacheKey);
+      if (typeof cached === "string") return cached;
+      const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: source, key: apiKey, model, target, provider, baseUrl }) });
+      const result = await response.json() as { translation?: string; error?: string };
+      if (!response.ok || !result.translation) throw new Error(result.error || "选中内容翻译失败");
+      translationCache.current.set(cacheKey, result.translation);
+      return result.translation;
+    }));
+    return translated.join("\n");
   }, [apiKey, baseUrl, model, provider, target]);
-  async function translateAligned(sentences: string[], allowSplit = true): Promise<string[]> {
-    const cacheKey = `aligned\u0000${provider}\u0000${model}\u0000${target}\u0000${sentences.join("\u0001")}`;
+  async function translateAligned(sentences: string[], context = "", allowSplit = true): Promise<string[]> {
+    const cacheKey = `aligned\u0000${provider}\u0000${model}\u0000${target}\u0000${context}\u0000${sentences.join("\u0001")}`;
     const cached = translationCache.current.get(cacheKey);
     if (Array.isArray(cached)) return cached;
-    const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sentences, key: apiKey, model, target, provider, baseUrl }) });
+    const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sentences, context, key: apiKey, model, target, provider, baseUrl }) });
     const result = await response.json() as { translations?: string[]; error?: string };
     if (!response.ok || result.translations?.length !== sentences.length) {
       const formatError = result.error === "模型未按句返回译文，请重试或更换模型" || response.ok;
       if (!formatError) throw new Error(result.error || "逐句翻译失败");
       if (allowSplit && sentences.length > 8) {
         const middle = Math.ceil(sentences.length / 2);
-        const [left, right] = await Promise.all([translateAligned(sentences.slice(0, middle), false), translateAligned(sentences.slice(middle), false)]);
+        const [left, right] = await Promise.all([translateAligned(sentences.slice(0, middle), context, false), translateAligned(sentences.slice(middle), context, false)]);
         const translations = [...left, ...right];
         translationCache.current.set(cacheKey, translations);
         return translations;
@@ -352,19 +358,33 @@ export default function Home() {
         let completed = 0;
         let stopped = false;
         const translatePage = async (index: number) => {
-          const sentences = splitSentences(sources[index]);
-          const pairs: SentencePair[] = [];
-          for (let offset = 0; offset < sentences.length;) {
-            const batch: string[] = [];
+          const units = academicUnits(sources[index]);
+          const translatable = units.flatMap((unit, unitIndex) => unit.translate ? [unitIndex] : []);
+          const translatedByUnit = new Map<number, string>();
+          for (let offset = 0; offset < translatable.length;) {
+            const batchIndexes: number[] = [];
             let length = 0;
-            while (offset < sentences.length && batch.length < 20 && (length + sentences[offset].length <= 6500 || !batch.length)) {
-              batch.push(sentences[offset++]);
-              length += batch[batch.length - 1].length;
+            while (offset < translatable.length && batchIndexes.length < 20) {
+              const unitIndex = translatable[offset];
+              const nextLength = length + units[unitIndex].source.length;
+              if (batchIndexes.length && nextLength > 6500) break;
+              batchIndexes.push(unitIndex);
+              length = nextLength;
+              offset++;
             }
-            const translated = await translateAligned(batch);
-            batch.forEach((source, position) => pairs.push({ source, translation: translated[position] }));
+            const first = batchIndexes[0];
+            const last = batchIndexes[batchIndexes.length - 1];
+            const context = [
+              sources[index - 1]?.slice(-900) || "",
+              units.slice(Math.max(0, first - 2), first).map(unit => unit.source).join(" "),
+              units.slice(last + 1, last + 3).map(unit => unit.source).join(" "),
+              sources[index + 1]?.slice(0, 900) || "",
+            ].filter(Boolean).join("\n").slice(0, 3600);
+            const translated = await translateAligned(batchIndexes.map(unitIndex => units[unitIndex].source), context);
+            batchIndexes.forEach((unitIndex, position) => translatedByUnit.set(unitIndex, translated[position]));
           }
-          setDoc(current => current.id === doc.id ? ({ ...current, pages: current.pages.map((item, i) => i === index ? { ...item, translation: pairs.map(pair => pair.translation).join(" "), sentencePairs: pairs } : item) }) : current);
+          const pairs: SentencePair[] = units.map((unit, unitIndex) => ({ source: unit.source, translation: unit.translate ? translatedByUnit.get(unitIndex) || unit.source : unit.source, ...(unit.translate ? {} : { kind: "formula" as const }) }));
+          setDoc(current => current.id === doc.id ? ({ ...current, pages: current.pages.map((item, i) => i === index ? { ...item, translation: pairs.map(pair => pair.translation).join("\n"), sentencePairs: pairs } : item) }) : current);
           completed++;
           setProgress(`已翻译 ${completed} / ${indexes.length} 页`);
         };
