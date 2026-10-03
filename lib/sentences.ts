@@ -15,16 +15,20 @@ export function isFormulaText(text: string): boolean {
   const compact = text.replace(/\s+/g, "");
   if (!compact) return false;
   const replacementGlyphs = (compact.match(/[□�]/g) || []).length;
-  const operators = (compact.match(/[=+−–*/×÷<>≤≥≈≠∑∏∫√∞^_()[\]{}|]/g) || []).length;
+  const operators = (compact.match(/[=+−–*/×÷<>≤≥≈≠∑∏∫√∞^_()[\]{}|∂∇∈∉∪∩⊂⊆⊤±∓·⋯…]/g) || []).length;
   const digits = (compact.match(/\d/g) || []).length;
   const longWords = text.match(/[A-Za-z\p{Script=Han}]{3,}/gu) || [];
   const isolatedVariables = text.match(/(?:^|\s)[A-Za-zΑ-Ωα-ωξΔ][0-9]?(?=\s|$)/g) || [];
   const indexedTerms = text.match(/[A-Za-zΑ-Ωα-ωξΔδ][A-Za-z0-9_]*\s*\([^)]{1,24}\)/g) || [];
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  const symbolicTokens = tokens.filter(token => /^(?:[A-Za-zΑ-Ωα-ωξΔδ](?:_[A-Za-z0-9]+|\d+)?|[−+]?\d+(?:\.\d+)?|[()[\]{}=+−–*/×÷<>≤≥≈≠^_|∂∇∈∉∪∩⊂⊆⊤±∓·⋯…]+)$/.test(token)).length;
+  const symbolicLine = tokens.length >= 4 && symbolicTokens / tokens.length >= .55 && operators + digits >= 4 && longWords.length < 3;
   return replacementGlyphs >= 2
     || (/[=≈≤≥]/.test(compact) && operators + digits >= 6 && longWords.length < 5)
     || (operators + digits >= 14 && longWords.length < 7)
     || (isolatedVariables.length >= 5 && operators + digits >= 5)
-    || (indexedTerms.length >= 2 && longWords.length < 4);
+    || (indexedTerms.length >= 2 && longWords.length < 4)
+    || symbolicLine;
 }
 
 /** Detect flattened axis labels, legends and table rows that are useful in the PDF image but harmful as translation input. */
@@ -66,13 +70,17 @@ export function academicUnits(text: string): AcademicUnit[] {
     prose = "";
   };
   const addProse = (value: string) => { prose = prose ? `${prose} ${value}` : value; };
-  const addNonProse = (source: string, kind: "formula" | "visual") => { flush(); units.push({ source, translate: false, kind }); };
+  const addNonProse = (source: string, kind: "formula" | "visual") => {
+    flush();
+    const previous = units.at(-1);
+    if (previous?.kind === kind) previous.source += `\n${source}`;
+    else units.push({ source, translate: false, kind });
+  };
   for (const line of lines) {
     if (headingLine.test(line) || numberedHeading.test(line)) { flush(); units.push({ source: line, translate: true }); continue; }
     const captionAt = line.search(captionStart);
-    if (captionAt > 0 && isVisualDataText(line.slice(0, captionAt))) {
-      addNonProse(line.slice(0, captionAt).trim(), "visual");
-      addProse(line.slice(captionAt).trim());
+    if (captionAt === 0 || captionAt > 0 && isVisualDataText(line.slice(0, captionAt))) {
+      addNonProse(line, "visual");
       continue;
     }
     if (isVisualDataText(line)) { addNonProse(line, "visual"); continue; }
@@ -85,10 +93,10 @@ export function academicUnits(text: string): AcademicUnit[] {
       flush();
       const explanation = formula.search(/\s(?:其中|式中|where|in which)\s*/i);
       if (explanation > 12) {
-        units.push({ source: formula.slice(0, explanation).trim(), translate: false, kind: "formula" });
+        addNonProse(formula.slice(0, explanation).trim(), "formula");
         formula = formula.slice(explanation).trim();
         addProse(formula);
-      } else units.push({ source: formula, translate: false, kind: "formula" });
+      } else addNonProse(formula, "formula");
       continue;
     }
     addProse(line);

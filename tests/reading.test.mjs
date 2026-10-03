@@ -46,6 +46,7 @@ test("academic units join wrapped prose and preserve display mathematics", () =>
   ]);
   assert.equal(isFormulaText("Qw = □ □ □ q w 0 · · · 0 0 q w · · · Np × Np"), true);
   assert.equal(isFormulaText("u_e(k) u_e(k + 1) u_e(k + N_c - 1)"), true);
+  assert.equal(isFormulaText("u e ( k ) u e ( k + 1 )"), true);
 });
 
 test("PDF coordinates restore lines and visual data is excluded from translation", () => {
@@ -58,7 +59,8 @@ test("PDF coordinates restore lines and visual data is excluded from translation
   assert.equal(isVisualDataText("0 50 100 150 200 250 -0.27 0.00 0.27 PID-TED MPC-TED IMPC-TED MPC-TPD"), true);
   const units = academicUnits(text);
   assert.equal(units.find(unit => unit.kind === "visual")?.translate, false);
-  assert.ok(units.some(unit => unit.source.startsWith("Figure 12") && unit.translate));
+  assert.equal(units.filter(unit => unit.kind === "visual").length, 1);
+  assert.ok(!units.some(unit => unit.source.startsWith("Figure 12") && unit.translate));
 });
 
 test("broken matrices become a concise source-reference and refusal boilerplate is detected", () => {

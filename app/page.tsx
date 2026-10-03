@@ -48,7 +48,7 @@ function TranslatedContent({ item, pageIndex, activeSentence, onSentenceSelect, 
   onSentenceSelect: (page: number, index: number) => void; zoom: number; showHint: boolean;
 }) {
   return <><p style={{ fontSize: `${16 * zoom}px` }}>{item.sentencePairs?.length
-    ? item.sentencePairs.map((pair, index) => pair.kind === "visual" ? null : <span key={index} className={`linked-sentence${pair.kind === "formula" ? " linked-formula" : ""}${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
+    ? item.sentencePairs.map((pair, index) => pair.kind === "visual" ? <span key={index} className="linked-visual-spacer" aria-hidden="true"/> : <span key={index} className={`linked-sentence${pair.kind === "formula" ? " linked-formula" : ""}${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
     : item.translation}</p>{showHint && item.translation && !item.sentencePairs?.length && <small className="alignment-hint">重新翻译此页可启用逐句对照。</small>}</>;
 }
 
