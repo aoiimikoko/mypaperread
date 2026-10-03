@@ -1,6 +1,6 @@
-export type SentencePair = { source: string; translation: string; kind?: "formula" };
+export type SentencePair = { source: string; translation: string; kind?: "formula" | "visual" };
 export type ItemRange = { startItem: number; startOffset: number; endItem: number; endOffset: number };
-export type AcademicUnit = { source: string; translate: boolean };
+export type AcademicUnit = { source: string; translate: boolean; kind?: "formula" | "visual" };
 
 export function splitSentences(text: string): string[] {
   const segmenter = new Intl.Segmenter(undefined, { granularity: "sentence" });
@@ -9,6 +9,7 @@ export function splitSentences(text: string): string[] {
 
 const headingLine = /^\s*(?:\d+(?:\.\d+){0,4}[.)]?\s+)?(?:(?:abstract|introduction|background|methods?|results?|discussion|conclusions?)\b|摘要|引言|方法|结果|讨论|结论)/i;
 const numberedHeading = /^\s*\d+(?:\.\d+){1,4}\.?\s+\D/;
+const captionStart = /\b(?:fig(?:ure)?|table)\s*\d+[.:]?|(?:图|表)\s*\d+[.:：]?/i;
 
 export function isFormulaText(text: string): boolean {
   const compact = text.replace(/\s+/g, "");
@@ -18,10 +19,39 @@ export function isFormulaText(text: string): boolean {
   const digits = (compact.match(/\d/g) || []).length;
   const longWords = text.match(/[A-Za-z\p{Script=Han}]{3,}/gu) || [];
   const isolatedVariables = text.match(/(?:^|\s)[A-Za-zΑ-Ωα-ωξΔ][0-9]?(?=\s|$)/g) || [];
+  const indexedTerms = text.match(/[A-Za-zΑ-Ωα-ωξΔδ][A-Za-z0-9_]*\s*\([^)]{1,24}\)/g) || [];
   return replacementGlyphs >= 2
     || (/[=≈≤≥]/.test(compact) && operators + digits >= 6 && longWords.length < 5)
     || (operators + digits >= 14 && longWords.length < 7)
-    || (isolatedVariables.length >= 5 && operators + digits >= 5);
+    || (isolatedVariables.length >= 5 && operators + digits >= 5)
+    || (indexedTerms.length >= 2 && longWords.length < 4);
+}
+
+/** Detect flattened axis labels, legends and table rows that are useful in the PDF image but harmful as translation input. */
+export function isVisualDataText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || captionStart.test(normalized.slice(0, 18))) return false;
+  const numbers = normalized.match(/[−-]?\d+(?:\.\d+)?%?/g) || [];
+  const tokens = normalized.match(/[A-Za-zΑ-Ωα-ω]+(?:-[A-Za-z]+)?|[\p{Script=Han}]+|[−-]?\d+(?:\.\d+)?%?/gu) || [];
+  const sentenceMarks = (normalized.match(/[!?。！？；;]|[.](?=\s|$)/g) || []).length;
+  const legendLabels = normalized.match(/\b(?:PID|MPC|IMPC|TED|TPD|reference|series)\b/gi) || [];
+  const proseWords = normalized.match(/[A-Za-z]{4,}|[\p{Script=Han}]{2,}/gu) || [];
+  const uniqueRatio = tokens.length ? new Set(tokens.map(token => token.toLocaleLowerCase())).size / tokens.length : 1;
+  return !/[=≤≥≈]/.test(normalized) && ((numbers.length >= 5 && sentenceMarks === 0 && proseWords.length < 10)
+    || (numbers.length >= 5 && legendLabels.length >= 4)
+    || (numbers.length >= 8 && tokens.length >= 16 && uniqueRatio < .65));
+}
+
+export function formulaDisplayText(text: string): string {
+  const brokenGlyphs = (text.match(/[□�]/g) || []).length;
+  const looksLikeFlattenedMatrix = text.length > 220 && /[=+≤≥Δ]/.test(text) && (text.match(/\d/g) || []).length >= 8;
+  if (brokenGlyphs < 2 && !looksLikeFlattenedMatrix) return text;
+  const number = [...text.matchAll(/\((\d{1,4})\)/g)].at(-1)?.[1];
+  return `［矩阵或公式${number ? `（${number}）` : ""}请对照左侧原文］`;
+}
+
+export function isTranslationRefusal(text: string): boolean {
+  return /(?:请(?:提供|发送|输入).{0,18}(?:翻译|学术文本)|没有提供.{0,12}(?:文本|内容)|无法处理这个请求|未提供需要翻译|please (?:provide|send|enter).{0,24}(?:text|content)|no (?:text|content).{0,16}(?:provided|received))/i.test(text);
 }
 
 /** Rebuild wrapped prose while keeping display equations as independent, untranslated units. */
@@ -36,8 +66,16 @@ export function academicUnits(text: string): AcademicUnit[] {
     prose = "";
   };
   const addProse = (value: string) => { prose = prose ? `${prose} ${value}` : value; };
+  const addNonProse = (source: string, kind: "formula" | "visual") => { flush(); units.push({ source, translate: false, kind }); };
   for (const line of lines) {
     if (headingLine.test(line) || numberedHeading.test(line)) { flush(); units.push({ source: line, translate: true }); continue; }
+    const captionAt = line.search(captionStart);
+    if (captionAt > 0 && isVisualDataText(line.slice(0, captionAt))) {
+      addNonProse(line.slice(0, captionAt).trim(), "visual");
+      addProse(line.slice(captionAt).trim());
+      continue;
+    }
+    if (isVisualDataText(line)) { addNonProse(line, "visual"); continue; }
     if (isFormulaText(line)) {
       const formulaStart = line.search(/(?:^|[：:，,;；]\s*)(?=[A-Za-zΑ-Ωα-ωξΔ][A-Za-z0-9_ ]{0,10}\s*[=≈])/);
       const start = formulaStart > 0 ? formulaStart + (line[formulaStart].match(/[：:，,;；]/) ? 1 : 0) : 0;
@@ -47,10 +85,10 @@ export function academicUnits(text: string): AcademicUnit[] {
       flush();
       const explanation = formula.search(/\s(?:其中|式中|where|in which)\s*/i);
       if (explanation > 12) {
-        units.push({ source: formula.slice(0, explanation).trim(), translate: false });
+        units.push({ source: formula.slice(0, explanation).trim(), translate: false, kind: "formula" });
         formula = formula.slice(explanation).trim();
         addProse(formula);
-      } else units.push({ source: formula, translate: false });
+      } else units.push({ source: formula, translate: false, kind: "formula" });
       continue;
     }
     addProse(line);

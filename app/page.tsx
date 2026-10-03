@@ -8,7 +8,8 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import PdfPage, { type PdfMark } from "./pdf-page";
 import { deletePaper, listPapers, loadPaper, savePaper, type PaperSummary, type SavedPaper } from "@/lib/library-db";
 import { bodySegments } from "@/lib/paper-body";
-import { academicUnits, normalizeAcademicText, type SentencePair } from "@/lib/sentences";
+import { academicUnits, formulaDisplayText, isTranslationRefusal, normalizeAcademicText, type SentencePair } from "@/lib/sentences";
+import { extractPdfPageText, type PdfTextItemLike } from "@/lib/pdf-text";
 
 type Page = { heading: string; text: string; translation: string; sentencePairs?: SentencePair[] };
 type DocumentData = { id?: string; title: string; type: "sample" | "pdf" | "web"; pages: Page[]; pdf?: Uint8Array; createdAt?: number; sourceUrl?: string };
@@ -47,7 +48,7 @@ function TranslatedContent({ item, pageIndex, activeSentence, onSentenceSelect, 
   onSentenceSelect: (page: number, index: number) => void; zoom: number; showHint: boolean;
 }) {
   return <><p style={{ fontSize: `${16 * zoom}px` }}>{item.sentencePairs?.length
-    ? item.sentencePairs.map((pair, index) => <span key={index} className={`linked-sentence${pair.kind === "formula" ? " linked-formula" : ""}${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
+    ? item.sentencePairs.map((pair, index) => pair.kind === "visual" ? null : <span key={index} className={`linked-sentence${pair.kind === "formula" ? " linked-formula" : ""}${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
     : item.translation}</p>{showHint && item.translation && !item.sentencePairs?.length && <small className="alignment-hint">重新翻译此页可启用逐句对照。</small>}</>;
 }
 
@@ -204,12 +205,7 @@ export default function Home() {
       const sourcePage = await pdf.getPage(i);
       const height = sourcePage.getViewport({ scale: 1 }).height;
       const content = await sourcePage.getTextContent();
-      const text = content.items.map(item => {
-        if (!("str" in item)) return "";
-        const y = item.transform[5];
-        if (y >= 0 && y <= height && (y < height * .04 || y > height * .965)) return "";
-        return `${item.str}${item.hasEOL ? "\n" : " "}`;
-      }).join("").replace(/[^\S\n]+/g, " ").trim();
+      const text = extractPdfPageText(content.items.filter((item): item is typeof item & { str: string } => "str" in item) as PdfTextItemLike[], height);
       pages.push({ heading: `第 ${i} 页`, text, translation: "" });
     }
     if (!pages.some(p => p.text)) throw new Error("PDF 未提取到文字。扫描版 PDF 暂不支持文字翻译。");
@@ -310,8 +306,9 @@ export default function Home() {
       const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: source, key: apiKey, model, target, provider, baseUrl }) });
       const result = await response.json() as { translation?: string; error?: string };
       if (!response.ok || !result.translation) throw new Error(result.error || "选中内容翻译失败");
-      translationCache.current.set(cacheKey, result.translation);
-      return result.translation;
+      const translation = isTranslationRefusal(result.translation) ? source : result.translation;
+      translationCache.current.set(cacheKey, translation);
+      return translation;
     }));
     return translated.join("\n");
   }, [apiKey, baseUrl, model, provider, target]);
@@ -343,16 +340,36 @@ export default function Home() {
       translationCache.current.set(cacheKey, translations);
       return translations;
     }
-    translationCache.current.set(cacheKey, result.translations);
-    return result.translations;
+    const translations = result.translations.map((translation, index) => isTranslationRefusal(translation) ? sentences[index] : translation);
+    translationCache.current.set(cacheKey, translations);
+    return translations;
   }
   async function translate(all: boolean, atIndex = page) {
     if (!apiKey.trim() || !model.trim()) { setSettingsOpen(true); setNotice("请先填写模型 API Key 和模型 ID"); return; }
-    const sources = doc.type === "pdf" ? bodySegments(doc.pages) : doc.pages.map(item => item.text);
-    const indexes = all ? sources.flatMap((text, i) => text.trim() ? [i] : []) : sources[atIndex]?.trim() ? [atIndex] : [];
-    if (!indexes.length) { setNotice("未识别到摘要至结论的正文。可在 PDF 上选中文字单独翻译。"); return; }
     setBusy(true);
     try {
+      let sourcePages = doc.pages;
+      if (doc.type === "pdf" && doc.pdf) {
+        setProgress("正在优化公式与图表文本…");
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+        const pdf = await pdfjs.getDocument({ data: doc.pdf.slice() }).promise;
+        const rebuilt: Page[] = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const sourcePage = await pdf.getPage(i);
+          const height = sourcePage.getViewport({ scale: 1 }).height;
+          const content = await sourcePage.getTextContent();
+          const text = extractPdfPageText(content.items.filter((item): item is typeof item & { str: string } => "str" in item) as PdfTextItemLike[], height);
+          rebuilt.push({ ...doc.pages[i - 1], heading: doc.pages[i - 1]?.heading || `第 ${i} 页`, text, translation: doc.pages[i - 1]?.translation || "" });
+          sourcePage.cleanup();
+        }
+        await pdf.destroy();
+        sourcePages = rebuilt;
+        setDoc(current => current.id === doc.id ? { ...current, pages: rebuilt } : current);
+      }
+      const sources = doc.type === "pdf" ? bodySegments(sourcePages) : sourcePages.map(item => item.text);
+      const indexes = all ? sources.flatMap((text, i) => text.trim() ? [i] : []) : sources[atIndex]?.trim() ? [atIndex] : [];
+      if (!indexes.length) { setNotice("未识别到摘要至结论的正文。可在 PDF 上选中文字单独翻译。"); return; }
       if (doc.type === "pdf") {
         let next = 0;
         let completed = 0;
@@ -383,7 +400,11 @@ export default function Home() {
             const translated = await translateAligned(batchIndexes.map(unitIndex => units[unitIndex].source), context);
             batchIndexes.forEach((unitIndex, position) => translatedByUnit.set(unitIndex, translated[position]));
           }
-          const pairs: SentencePair[] = units.map((unit, unitIndex) => ({ source: unit.source, translation: unit.translate ? translatedByUnit.get(unitIndex) || unit.source : unit.source, ...(unit.translate ? {} : { kind: "formula" as const }) }));
+          const pairs: SentencePair[] = units.map((unit, unitIndex) => ({
+            source: unit.source,
+            translation: unit.translate ? translatedByUnit.get(unitIndex) || unit.source : unit.kind === "formula" ? formulaDisplayText(unit.source) : "",
+            ...(unit.kind ? { kind: unit.kind } : {}),
+          }));
           setDoc(current => current.id === doc.id ? ({ ...current, pages: current.pages.map((item, i) => i === index ? { ...item, translation: pairs.map(pair => pair.translation).join("\n"), sentencePairs: pairs } : item) }) : current);
           completed++;
           setProgress(`已翻译 ${completed} / ${indexes.length} 页`);

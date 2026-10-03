@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { bodySegments } from "../lib/paper-body.ts";
-import { academicUnits, isFormulaText, sentenceItemRanges, splitSentences } from "../lib/sentences.ts";
+import { academicUnits, formulaDisplayText, isFormulaText, isTranslationRefusal, isVisualDataText, sentenceItemRanges, splitSentences } from "../lib/sentences.ts";
+import { extractPdfPageText } from "../lib/pdf-text.ts";
 import { parseAlignedTranslations } from "../lib/aligned-translation.ts";
 
 test("PDF body excludes page furniture and ends before references", () => {
@@ -38,10 +39,29 @@ test("academic units join wrapped prose and preserve display mathematics", () =>
   const units = academicUnits("The controller mini-\nmizes tracking error across lines.\nJ = (Y - Yr + F)ᵀ Qw (Y - Yr + F) + ΔUᵀ Rw ΔU (34)\n其中 Qw 和 Rw 是权重矩阵。\n2. Conclusions\nThe method remains stable.");
   assert.deepEqual(units, [
     { source: "The controller minimizes tracking error across lines.", translate: true },
-    { source: "J = (Y - Yr + F)ᵀ Qw (Y - Yr + F) + ΔUᵀ Rw ΔU (34)", translate: false },
+    { source: "J = (Y - Yr + F)ᵀ Qw (Y - Yr + F) + ΔUᵀ Rw ΔU (34)", translate: false, kind: "formula" },
     { source: "其中 Qw 和 Rw 是权重矩阵。", translate: true },
     { source: "2. Conclusions", translate: true },
     { source: "The method remains stable.", translate: true },
   ]);
   assert.equal(isFormulaText("Qw = □ □ □ q w 0 · · · 0 0 q w · · · Np × Np"), true);
+  assert.equal(isFormulaText("u_e(k) u_e(k + 1) u_e(k + N_c - 1)"), true);
+});
+
+test("PDF coordinates restore lines and visual data is excluded from translation", () => {
+  const text = extractPdfPageText([
+    { str: "A result is shown below.", transform: [1, 0, 0, 1, 50, 700], height: 10 },
+    { str: "0 50 100 150 200 250", transform: [1, 0, 0, 1, 90, 500], height: 10 },
+    { str: "Figure 12. Tracking error curve.", transform: [1, 0, 0, 1, 50, 300], height: 10 },
+  ], 800);
+  assert.equal(text, "A result is shown below.\n0 50 100 150 200 250\nFigure 12. Tracking error curve.");
+  assert.equal(isVisualDataText("0 50 100 150 200 250 -0.27 0.00 0.27 PID-TED MPC-TED IMPC-TED MPC-TPD"), true);
+  const units = academicUnits(text);
+  assert.equal(units.find(unit => unit.kind === "visual")?.translate, false);
+  assert.ok(units.some(unit => unit.source.startsWith("Figure 12") && unit.translate));
+});
+
+test("broken matrices become a concise source-reference and refusal boilerplate is detected", () => {
+  assert.equal(formulaDisplayText("U = □ □ □ □ Δu(k) □ □ □ □ (37)"), "［矩阵或公式（37）请对照左侧原文］");
+  assert.equal(isTranslationRefusal("请提供需要翻译的学术文本内容。"), true);
 });
