@@ -62,12 +62,15 @@ export async function POST(request: NextRequest) {
     }
     const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(120000) });
     if (response.status >= 300 && response.status < 400) return NextResponse.json({ error: "平台接口发生跳转，请检查接口地址" }, { status: 502 });
-    const data = await response.json() as {
+    const rawResponse = await response.text();
+    let data: {
       choices?: { message?: { content?: string } }[];
       content?: { type?: string; text?: string }[];
       candidates?: { content?: { parts?: { text?: string }[] } }[];
       error?: { message?: string } | string;
     };
+    try { data = JSON.parse(rawResponse) as typeof data; }
+    catch { return NextResponse.json({ error: `模型平台返回了非 JSON 响应（HTTP ${response.status}）` }, { status: 502 }); }
     if (!response.ok) {
       const raw = typeof data.error === "string" ? data.error : data.error?.message;
       const safe = raw?.replaceAll(key.trim(), "[已隐藏密钥]").slice(0, 300);

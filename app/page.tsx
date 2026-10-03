@@ -10,6 +10,7 @@ import { deletePaper, listPapers, loadPaper, savePaper, type PaperSummary, type 
 import { bodySegments } from "@/lib/paper-body";
 import { academicUnits, formulaDisplayText, isTranslationRefusal, normalizeAcademicText, type SentencePair } from "@/lib/sentences";
 import { extractPdfPageText, type PdfTextItemLike } from "@/lib/pdf-text";
+import { readJsonResponse } from "@/lib/http-json";
 
 type Page = { heading: string; text: string; translation: string; sentencePairs?: SentencePair[] };
 type DocumentData = { id?: string; title: string; type: "sample" | "pdf" | "web"; pages: Page[]; pdf?: Uint8Array; createdAt?: number; sourceUrl?: string };
@@ -233,7 +234,7 @@ export default function Home() {
     setBusy(true); setProgress("正在读取链接…");
     try {
       const res = await fetch("/api/import-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
-      const result = await res.json() as { kind?: string; title?: string; text?: string; data?: string; error?: string };
+      const result = await readJsonResponse<{ kind?: string; title?: string; text?: string; data?: string; error?: string }>(res);
       if (!res.ok) throw new Error(result.error || "链接导入失败");
       if (result.kind === "pdf" && result.data) {
         const bytes = Uint8Array.from(atob(result.data), c => c.charCodeAt(0));
@@ -304,7 +305,7 @@ export default function Home() {
       const cached = translationCache.current.get(cacheKey);
       if (typeof cached === "string") return cached;
       const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: source, key: apiKey, model, target, provider, baseUrl }) });
-      const result = await response.json() as { translation?: string; error?: string };
+      const result = await readJsonResponse<{ translation?: string; error?: string }>(response);
       if (!response.ok || !result.translation) throw new Error(result.error || "选中内容翻译失败");
       const translation = isTranslationRefusal(result.translation) ? source : result.translation;
       translationCache.current.set(cacheKey, translation);
@@ -317,7 +318,7 @@ export default function Home() {
     const cached = translationCache.current.get(cacheKey);
     if (Array.isArray(cached)) return cached;
     const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sentences, context, key: apiKey, model, target, provider, baseUrl }) });
-    const result = await response.json() as { translations?: string[]; error?: string };
+    const result = await readJsonResponse<{ translations?: string[]; error?: string }>(response);
     if (!response.ok || result.translations?.length !== sentences.length) {
       const formatError = result.error === "模型未按句返回译文，请重试或更换模型" || response.ok;
       if (!formatError) throw new Error(result.error || "逐句翻译失败");
@@ -336,7 +337,7 @@ export default function Home() {
           translations[index] = await translateSelection(sentences[index]);
         }
       };
-      await Promise.all(Array.from({ length: Math.min(4, sentences.length) }, () => worker()));
+      await Promise.all(Array.from({ length: Math.min(2, sentences.length) }, () => worker()));
       translationCache.current.set(cacheKey, translations);
       return translations;
     }
@@ -416,7 +417,7 @@ export default function Home() {
             catch (cause) { stopped = true; throw cause; }
           }
         };
-        const results = await Promise.allSettled(Array.from({ length: Math.min(2, indexes.length) }, () => worker()));
+        const results = await Promise.allSettled(Array.from({ length: Math.min(1, indexes.length) }, () => worker()));
         const failed = results.find(result => result.status === "rejected");
         if (failed?.status === "rejected") throw failed.reason;
         setNotice(all ? "正文翻译完成" : "当前页翻译完成");
@@ -429,7 +430,7 @@ export default function Home() {
         const translated: string[] = [];
         for (const chunk of chunks) {
           const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: chunk, key: apiKey, model, target, provider, baseUrl }) });
-          const result = await response.json() as { translation?: string; error?: string };
+          const result = await readJsonResponse<{ translation?: string; error?: string }>(response);
           if (!response.ok || !result.translation) throw new Error(result.error || "翻译失败");
           translated.push(result.translation);
         }
@@ -446,7 +447,7 @@ export default function Home() {
     setTesting(true);
     try {
       const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "Research improves understanding.", key: apiKey, model, target, provider, baseUrl }) });
-      const result = await response.json() as { translation?: string; error?: string };
+      const result = await readJsonResponse<{ translation?: string; error?: string }>(response);
       if (!response.ok || !result.translation) throw new Error(result.error || "连接测试失败");
       setNotice("连接成功，模型已返回译文");
     } catch (error) { setNotice(error instanceof Error ? error.message : "连接测试失败"); }

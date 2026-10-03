@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { bodySegments } from "../lib/paper-body.ts";
 import { academicUnits, formulaDisplayText, isFormulaText, isTranslationRefusal, isVisualDataText, sentenceItemRanges, splitSentences } from "../lib/sentences.ts";
 import { extractPdfPageText } from "../lib/pdf-text.ts";
+import { readJsonResponse } from "../lib/http-json.ts";
 import { parseAlignedTranslations } from "../lib/aligned-translation.ts";
 
 test("PDF body excludes page furniture and ends before references", () => {
@@ -47,6 +48,16 @@ test("academic units join wrapped prose and preserve display mathematics", () =>
   assert.equal(isFormulaText("Qw = □ □ □ q w 0 · · · 0 0 q w · · · Np × Np"), true);
   assert.equal(isFormulaText("u_e(k) u_e(k + 1) u_e(k + N_c - 1)"), true);
   assert.equal(isFormulaText("u e ( k ) u e ( k + 1 )"), true);
+  assert.equal(isFormulaText("Expanding (11) at the reference point (x r, y r, θ r) using a Taylor series and neglecting higher-order terms."), false);
+});
+
+test("matrix continuations stay in one formula block", () => {
+  const units = academicUnits("The error model is:\nX e = [ x − x r , y − y r , θ − θ r ]\nT\n= A t X e + B t u e (14)\nThe controller is then updated.");
+  assert.deepEqual(units, [
+    { source: "The error model is:", translate: true },
+    { source: "X e = [ x − x r , y − y r , θ − θ r ]\nT\n= A t X e + B t u e (14)", translate: false, kind: "formula" },
+    { source: "The controller is then updated.", translate: true },
+  ]);
 });
 
 test("PDF coordinates restore lines and visual data is excluded from translation", () => {
@@ -66,4 +77,8 @@ test("PDF coordinates restore lines and visual data is excluded from translation
 test("broken matrices become a concise source-reference and refusal boilerplate is detected", () => {
   assert.equal(formulaDisplayText("U = □ □ □ □ Δu(k) □ □ □ □ (37)"), "［矩阵或公式（37）请对照左侧原文］");
   assert.equal(isTranslationRefusal("请提供需要翻译的学术文本内容。"), true);
+});
+
+test("plain-text worker failures become readable errors", async () => {
+  await assert.rejects(() => readJsonResponse(new Response("Your worker exceeded a limit", { status: 503 })), /HTTP 503/);
 });

@@ -26,8 +26,9 @@ export function isFormulaText(text: string): boolean {
   return replacementGlyphs >= 2
     || (/[=≈≤≥]/.test(compact) && operators + digits >= 6 && longWords.length < 5)
     || (operators + digits >= 14 && longWords.length < 7)
-    || (isolatedVariables.length >= 5 && operators + digits >= 5)
+    || (isolatedVariables.length >= 5 && operators + digits >= 5 && longWords.length < 4)
     || (indexedTerms.length >= 2 && longWords.length < 4)
+    || (/=/.test(compact) && operators >= 4 && isolatedVariables.length >= 3 && longWords.length < 4)
     || symbolicLine;
 }
 
@@ -62,6 +63,14 @@ export function isTranslationRefusal(text: string): boolean {
 export function academicUnits(text: string): AcademicUnit[] {
   const normalized = text.replace(/\u00ad/g, "").replace(/([A-Za-z])-\s*\n\s*([a-z])/g, "$1$2");
   const lines = normalized.split(/\n+/).map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const formulaLines = lines.map(line => isFormulaText(line));
+  const fragment = (line: string) => {
+    const longWords = line.match(/[A-Za-z\p{Script=Han}]{3,}/gu) || [];
+    return line.length <= 100 && !/[.!?。！？]$/.test(line) && longWords.length < 3 && /[A-Za-zΑ-Ωα-ωξΔδ0-9=+−–*/×÷<>≤≥≈≠()[\]{}_^|∂∇⊤□�]/.test(line);
+  };
+  for (let index = 0; index < lines.length; index++) {
+    if (!formulaLines[index] && fragment(lines[index]) && (formulaLines[index - 1] || formulaLines[index + 1])) formulaLines[index] = true;
+  }
   const units: AcademicUnit[] = [];
   let prose = "";
   const flush = () => {
@@ -76,7 +85,8 @@ export function academicUnits(text: string): AcademicUnit[] {
     if (previous?.kind === kind) previous.source += `\n${source}`;
     else units.push({ source, translate: false, kind });
   };
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
     if (headingLine.test(line) || numberedHeading.test(line)) { flush(); units.push({ source: line, translate: true }); continue; }
     const captionAt = line.search(captionStart);
     if (captionAt === 0 || captionAt > 0 && isVisualDataText(line.slice(0, captionAt))) {
@@ -84,7 +94,7 @@ export function academicUnits(text: string): AcademicUnit[] {
       continue;
     }
     if (isVisualDataText(line)) { addNonProse(line, "visual"); continue; }
-    if (isFormulaText(line)) {
+    if (formulaLines[lineIndex]) {
       const formulaStart = line.search(/(?:^|[：:，,;；]\s*)(?=[A-Za-zΑ-Ωα-ωξΔ][A-Za-z0-9_ ]{0,10}\s*[=≈])/);
       const start = formulaStart > 0 ? formulaStart + (line[formulaStart].match(/[：:，,;；]/) ? 1 : 0) : 0;
       const prefix = line.slice(0, start).trim();
