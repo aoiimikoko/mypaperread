@@ -1,4 +1,4 @@
-export type SentencePair = { source: string; translation: string; kind?: "formula" | "visual" };
+export type SentencePair = { source: string; translation: string; kind?: "formula" | "visual"; latex?: string; formulaError?: string; formulaMethod?: "text" | "vision" };
 export type ItemRange = { startItem: number; startOffset: number; endItem: number; endOffset: number };
 export type AcademicUnit = { source: string; translate: boolean; kind?: "formula" | "visual" };
 
@@ -14,6 +14,7 @@ const captionStart = /\b(?:fig(?:ure)?|table)\s*\d+[.:]?|(?:图|表)\s*\d+[.:：
 export function isFormulaText(text: string): boolean {
   const compact = text.replace(/\s+/g, "");
   if (!compact) return false;
+  if (/^(?:\(\d+\)|[~～–−,\s]|and|to|至|和)+[:：;；]?$/.test(text.trim())) return false;
   if (/\\begin\{(?:[pbBvV]?matrix|aligned|cases)\}|\\(?:frac|sqrt|dot|sum|int)\b/.test(text)) return true;
   const replacementGlyphs = (compact.match(/[□�]/g) || []).length;
   const operators = (compact.match(/[=+−–*/×÷<>≤≥≈≠∑∏∫√∞^_()[\]{}|∂∇∈∉∪∩⊂⊆⊤±∓·⋯…]/g) || []).length;
@@ -47,14 +48,6 @@ export function isVisualDataText(text: string): boolean {
   return !/[=≤≥≈]/.test(normalized) && ((numbers.length >= 5 && sentenceMarks === 0 && proseWords.length < 10)
     || (numbers.length >= 5 && legendLabels.length >= 4)
     || (numbers.length >= 8 && tokens.length >= 16 && uniqueRatio < .65));
-}
-
-export function formulaDisplayText(text: string): string {
-  const brokenGlyphs = (text.match(/[□�]/g) || []).length;
-  const looksLikeFlattenedMatrix = text.length > 220 && /[=+≤≥Δ]/.test(text) && (text.match(/\d/g) || []).length >= 8;
-  if (brokenGlyphs < 2 && !looksLikeFlattenedMatrix) return text;
-  const number = [...text.matchAll(/\((\d{1,4})\)/g)].at(-1)?.[1];
-  return `［矩阵或公式${number ? `（${number}）` : ""}请对照左侧原文］`;
 }
 
 export function isTranslationRefusal(text: string): boolean {
@@ -97,6 +90,7 @@ export function academicUnits(text: string): AcademicUnit[] {
   const formulaLines = lines.map(line => isFormulaText(line));
   const fragment = (line: string) => {
     const longWords = line.match(/[A-Za-z\p{Script=Han}]{3,}/gu) || [];
+    if ((line.match(/\(\d+\)/g) || []).length >= 2 && /^(?:\(\d+\)|[~～–−,\s]|and|to|至|和)+[:：;；]?$/.test(line)) return false;
     return line.length <= 100 && !/[.!?。！？]$/.test(line) && longWords.length < 3 && /[A-Za-zΑ-Ωα-ωξΔδ0-9=+−–*/×÷<>≤≥≈≠()[\]{}_^|∂∇⊤□�]/.test(line);
   };
   for (let index = 0; index < lines.length; index++) {
@@ -116,7 +110,7 @@ export function academicUnits(text: string): AcademicUnit[] {
   const addNonProse = (source: string, kind: "formula" | "visual") => {
     flush();
     const previous = units.at(-1);
-    if (previous?.kind === kind) previous.source += `\n${source}`;
+    if (previous?.kind === kind && !(kind === "formula" && /\(\d{1,4}\)\s*[.,]?\s*$/.test(previous.source) && !/^\(?\d+\)?$/.test(source))) previous.source += `\n${source}`;
     else units.push({ source, translate: false, kind });
   };
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {

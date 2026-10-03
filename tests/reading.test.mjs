@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { bodySegments } from "../lib/paper-body.ts";
-import { academicUnits, formulaDisplayText, isFormulaText, isTranslationRefusal, isVisualDataText, sentenceItemRanges, splitSentences } from "../lib/sentences.ts";
+import { academicUnits, isFormulaText, isTranslationRefusal, isVisualDataText, sentenceItemRanges, splitSentences } from "../lib/sentences.ts";
 import { extractPdfPageText } from "../lib/pdf-text.ts";
 import { readJsonResponse } from "../lib/http-json.ts";
+import { parseFormulaLatex, isDamagedFormula } from "../lib/formula-latex.ts";
+import katex from "katex";
 import { parseAlignedTranslations } from "../lib/aligned-translation.ts";
 
 test("PDF body excludes page furniture and ends before references", () => {
@@ -74,8 +76,7 @@ test("PDF coordinates restore lines and visual data is excluded from translation
   assert.ok(!units.some(unit => unit.source.startsWith("Figure 12") && unit.translate));
 });
 
-test("broken matrices become a concise source-reference and refusal boilerplate is detected", () => {
-  assert.equal(formulaDisplayText("U = □ □ □ □ Δu(k) □ □ □ □ (37)"), "［矩阵或公式（37）请对照左侧原文］");
+test("refusal boilerplate is detected", () => {
   assert.equal(isTranslationRefusal("请提供需要翻译的学术文本内容。"), true);
 });
 
@@ -106,4 +107,23 @@ test("multiline captions are skipped while subsequent body text is translated", 
   assert.equal(units[0].kind, "visual");
   assert.match(units[0].source, /right rear wheel/);
   assert.equal(units[1].translate, true);
+});
+
+test("LaTeX matrices preserve row structure and render as mathematical HTML", () => {
+  const matrix = String.raw`\begin{bmatrix}\dot{x}\\\dot{y}\\\dot{\theta}\end{bmatrix}=\begin{bmatrix}v\cos(\beta+\theta)\\v\sin(\beta+\theta)\\v\cos\beta\frac{\tan\delta_f-\tan\delta_r}{l_f+l_r}\end{bmatrix}\tag{10}`;
+  const latex = parseFormulaLatex(JSON.stringify({ latex: matrix, uncertain: false }));
+  assert.equal(latex, matrix);
+  const html = katex.renderToString(latex, { displayMode: true, throwOnError: true, trust: false });
+  assert.match(html, /class="katex/);
+  assert.match(html, /<mtable/);
+  assert.equal(parseFormulaLatex(JSON.stringify({ latex: matrix, uncertain: true })), null);
+  assert.equal(parseFormulaLatex("无法识别，请提供文本"), null);
+  assert.equal(isDamagedFormula("X = □ □ □"), true);
+});
+
+test("numbered adjacent equations are separate formula units", () => {
+  const formulas = academicUnits("X = f ( X , u ) (11)\nX r = f ( X r , u r ) (12)").filter(unit => unit.kind === "formula");
+  assert.equal(formulas.length, 2);
+  assert.equal(isFormulaText("(18)~(21), (25) and (26):"), false);
+  assert.equal(academicUnits("(18)~(21), (25) and (26):\nX = f ( X , u ) (27)")[0].translate, true);
 });

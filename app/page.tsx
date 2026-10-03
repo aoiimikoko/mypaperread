@@ -9,7 +9,9 @@ import PdfPage, { type PdfMark } from "./pdf-page";
 import FormulaBlock from "./formula-block";
 import { deletePaper, listPapers, loadPaper, savePaper, type PaperSummary, type SavedPaper } from "@/lib/library-db";
 import { bodySegments } from "@/lib/paper-body";
-import { academicUnits, formulaDisplayText, isTranslationRefusal, normalizeAcademicText, type SentencePair } from "@/lib/sentences";
+import { academicUnits, isTranslationRefusal, normalizeAcademicText, type SentencePair } from "@/lib/sentences";
+import { isDamagedFormula, parseFormulaLatex } from "@/lib/formula-latex";
+import { formulaRecognitionImage } from "./pdf-formula-image";
 import { extractPdfPageText, type PdfTextItemLike } from "@/lib/pdf-text";
 import { readJsonResponse } from "@/lib/http-json";
 
@@ -23,6 +25,11 @@ const sample: DocumentData = { title: "Parallel Reading for Research", type: "sa
 const settingsStorageKey = "mypaperread-reader-settings-v1";
 
 type ReaderSettings = {
+  formulaVision?: boolean;
+  formulaProvider?: ProviderId;
+  formulaBaseUrl?: string;
+  formulaModel?: string;
+  formulaKey?: string;
   apiKey?: string;
   provider?: ProviderId;
   baseUrl?: string;
@@ -45,13 +52,12 @@ function readStoredSettings(): ReaderSettings {
   }
 }
 
-function TranslatedContent({ item, pageIndex, activeSentence, onSentenceSelect, zoom, showHint, pdf }: {
-  pdf?: Uint8Array;
+function TranslatedContent({ item, pageIndex, activeSentence, onSentenceSelect, zoom, showHint }: {
   item: Page; pageIndex: number; activeSentence: { page: number; index: number } | null;
   onSentenceSelect: (page: number, index: number) => void; zoom: number; showHint: boolean;
 }) {
   return <><div className="translated-content" style={{ fontSize: `${16 * zoom}px` }}>{item.sentencePairs?.length
-    ? item.sentencePairs.map((pair, index) => pair.kind === "visual" ? <span key={index} className="linked-visual-spacer" aria-hidden="true"/> : pair.kind === "formula" ? <FormulaBlock key={index} data={pdf} pageIndex={pageIndex} source={pair.source} active={activeSentence?.page === pageIndex && activeSentence.index === index} onSelect={() => onSentenceSelect(pageIndex, index)}/> : <span key={index} className={`linked-sentence${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
+    ? item.sentencePairs.map((pair, index) => pair.kind === "visual" ? <span key={index} className="linked-visual-spacer" aria-hidden="true"/> : pair.kind === "formula" ? <FormulaBlock key={index} latex={pair.latex} error={pair.formulaError} method={pair.formulaMethod} active={activeSentence?.page === pageIndex && activeSentence.index === index} onSelect={() => onSentenceSelect(pageIndex, index)}/> : <span key={index} className={`linked-sentence${activeSentence?.page === pageIndex && activeSentence.index === index ? " linked-sentence-active" : ""}`} onClick={() => onSentenceSelect(pageIndex, index)}>{pair.translation}{" "}</span>)
     : item.translation}</div>{showHint && item.translation && !item.sentencePairs?.length && <small className="alignment-hint">重新翻译此页可启用逐句对照。</small>}</>;
 }
 
@@ -78,7 +84,7 @@ function ContinuousReader({ doc, mode, zoom, target, marks, activeSentence, onSe
     <div className={`reader-grid mode-${mode}${doc.pdf ? " pdf-grid" : ""}`}>
       {mode !== "translation" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge original-badge">ORIGINAL</span><strong>原文</strong></div><span>{doc.type === "pdf" ? "PDF 页面" : "源文本"}</span></div><div className={`paper${doc.pdf ? " pdf-paper" : ""}`}>{doc.pdf ? <PdfPage data={doc.pdf} index={index} zoom={zoom} marks={marks[index] || []} sentencePairs={item.sentencePairs || []} activeSentenceIndex={activeSentence?.page === index ? activeSentence.index : null} onSentenceSelect={sentence => onSentenceSelect(index, sentence)} onMark={mark => onMark(index, mark)} onTranslateSelection={onTranslateSelection}/> : <><div className="paper-top"><span>SOURCE DOCUMENT</span><span>{index + 1} / {doc.pages.length}</span></div><h3>{item.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{item.text}</p></>}</div></section>}
       {mode === "triple" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge text-badge">EXTRACTED TEXT</span><strong>提取文字</strong></div></div><div className="paper extracted-paper"><h3>{item.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{item.text}</p></div></section>}
-      {mode !== "original" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge translation-badge">TRANSLATION</span><strong>译文</strong></div><span>{target}</span></div><div className="paper translated-paper"><div className="paper-top"><span>对照译文</span><span>{index + 1} / {doc.pages.length}</span></div><h3>{item.heading}</h3>{item.translation ? <TranslatedContent item={item} pageIndex={index} activeSentence={activeSentence} onSentenceSelect={onSentenceSelect} zoom={zoom} showHint={doc.type === "pdf"} pdf={doc.pdf}/> : <div className="empty-translation"><Sparkles size={23}/><strong>这一页尚未翻译</strong><button className="quiet-button" onClick={() => onTranslate(index)}>翻译这一页</button></div>}</div></section>}
+      {mode !== "original" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge translation-badge">TRANSLATION</span><strong>译文</strong></div><span>{target}</span></div><div className="paper translated-paper"><div className="paper-top"><span>对照译文</span><span>{index + 1} / {doc.pages.length}</span></div><h3>{item.heading}</h3>{item.translation ? <TranslatedContent item={item} pageIndex={index} activeSentence={activeSentence} onSentenceSelect={onSentenceSelect} zoom={zoom} showHint={doc.type === "pdf"}/> : <div className="empty-translation"><Sparkles size={23}/><strong>这一页尚未翻译</strong><button className="quiet-button" onClick={() => onTranslate(index)}>翻译这一页</button></div>}</div></section>}
     </div>
   </section>)}</div>;
 }
@@ -104,6 +110,11 @@ export default function Home() {
   const [baseUrl, setBaseUrl] = useState(savedSettings.baseUrl || "https://api.openai.com/v1");
   const [model, setModel] = useState(savedSettings.model || "gpt-4o-mini");
   const [target, setTarget] = useState(savedSettings.target || "简体中文");
+  const [formulaVision, setFormulaVision] = useState(savedSettings.formulaVision || false);
+  const [formulaProvider, setFormulaProvider] = useState<ProviderId>(savedSettings.formulaProvider && providerById(savedSettings.formulaProvider) ? savedSettings.formulaProvider : "openai");
+  const [formulaBaseUrl, setFormulaBaseUrl] = useState(savedSettings.formulaBaseUrl || "https://api.openai.com/v1");
+  const [formulaModel, setFormulaModel] = useState(savedSettings.formulaModel || "");
+  const [formulaKey, setFormulaKey] = useState(savedSettings.rememberApiKey !== false ? savedSettings.formulaKey || "" : "");
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -156,10 +167,11 @@ export default function Home() {
     if (pendingSave.current) void savePaper(pendingSave.current);
   }, []);
   useEffect(() => {
-    const saved: ReaderSettings = { provider, baseUrl, model, target, zoom, mode, direction, rememberApiKey };
+    const saved: ReaderSettings = { provider, baseUrl, model, target, zoom, mode, direction, rememberApiKey, formulaVision, formulaProvider, formulaBaseUrl, formulaModel };
     if (rememberApiKey) saved.apiKey = apiKey;
+    if (rememberApiKey) saved.formulaKey = formulaKey;
     window.localStorage.setItem(settingsStorageKey, JSON.stringify(saved));
-  }, [apiKey, baseUrl, direction, mode, model, provider, rememberApiKey, target, zoom]);
+  }, [apiKey, baseUrl, direction, mode, model, provider, rememberApiKey, target, zoom, formulaVision, formulaProvider, formulaBaseUrl, formulaModel, formulaKey]);
   useEffect(() => {
     type Tool = { registerTool: (tool: { name: string; title: string; description: string; inputSchema: object; annotations: { readOnlyHint: boolean }; execute: (input: unknown) => unknown }, options: { signal: AbortSignal }) => void | Promise<void> };
     const context = (window.document as Document & { modelContext?: Tool }).modelContext;
@@ -347,6 +359,28 @@ export default function Home() {
     translationCache.current.set(cacheKey, translations);
     return translations;
   }
+  async function recognizeFormula(source: string, index: number): Promise<string> {
+    if (!formulaVision && isDamagedFormula(source)) throw new Error("字符已损坏，请在设置中启用视觉公式识别");
+    if (formulaVision && (!formulaKey.trim() || !formulaModel.trim())) throw new Error("请在设置中填写视觉公式模型与 API Key");
+    if (formulaVision && !doc.pdf) throw new Error("未找到原始 PDF，无法执行视觉公式识别");
+    const settings = formulaVision
+      ? { key: formulaKey, model: formulaModel, provider: formulaProvider, baseUrl: formulaBaseUrl }
+      : { key: apiKey, model, provider, baseUrl };
+    const cacheKey = `formula\u0000${JSON.stringify({ ...settings, key: undefined })}\u0000${formulaVision ? `${doc.id}:${index}:vision` : "text"}\u0000${source}`;
+    const cached = translationCache.current.get(cacheKey);
+    if (typeof cached === "string") return cached;
+    const image = formulaVision && doc.pdf ? await formulaRecognitionImage(doc.pdf, index, source) : undefined;
+    const response = await fetch("/api/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: "formula", text: source, image, ...settings }) });
+    const result = await readJsonResponse<{ latex?: string; error?: string }>(response);
+    if (!response.ok || !result.latex) throw new Error(result.error || "公式识别失败");
+    const latex = parseFormulaLatex(result.latex);
+    if (!latex) throw new Error("公式识别结果无效，请核对原文或使用视觉模型");
+    const katex = await import("katex");
+    try { katex.default.renderToString(latex, { displayMode: true, throwOnError: true, trust: false, maxExpand: 1000 }); }
+    catch { throw new Error("模型返回的 LaTeX 格式无效，请更换公式模型后重新识别"); }
+    translationCache.current.set(cacheKey, latex);
+    return latex;
+  }
   async function translate(all: boolean, atIndex = page) {
     if (!apiKey.trim() || !model.trim()) { setSettingsOpen(true); setNotice("请先填写模型 API Key 和模型 ID"); return; }
     setBusy(true);
@@ -376,6 +410,7 @@ export default function Home() {
       if (doc.type === "pdf") {
         let next = 0;
         let completed = 0;
+        let formulaFailures = 0;
         let stopped = false;
         const translatePage = async (index: number) => {
           const units = academicUnits(sources[index]);
@@ -405,9 +440,22 @@ export default function Home() {
           }
           const pairs: SentencePair[] = units.map((unit, unitIndex) => ({
             source: unit.source,
-            translation: unit.translate ? translatedByUnit.get(unitIndex) || unit.source : unit.kind === "formula" ? formulaDisplayText(unit.source) : "",
+            translation: unit.translate ? translatedByUnit.get(unitIndex) || unit.source : "",
             ...(unit.kind ? { kind: unit.kind } : {}),
           }));
+          for (const pair of pairs) {
+            if (pair.kind !== "formula") continue;
+            setProgress(`第 ${index + 1} 页：正在识别 LaTeX 公式…`);
+            try {
+              pair.latex = await recognizeFormula(pair.source, index);
+              pair.formulaMethod = formulaVision ? "vision" : "text";
+              pair.translation = `\\[\n${pair.latex}\n\\]`;
+            } catch (cause) {
+              pair.formulaError = (cause instanceof Error ? cause.message : "公式识别失败").slice(0, 160);
+              pair.translation = "（公式识别失败，请核对原文）";
+              formulaFailures++;
+            }
+          }
           setDoc(current => current.id === doc.id ? ({ ...current, pages: current.pages.map((item, i) => i === index ? { ...item, translation: pairs.map(pair => pair.translation).join("\n"), sentencePairs: pairs } : item) }) : current);
           completed++;
           setProgress(`已翻译 ${completed} / ${indexes.length} 页`);
@@ -422,7 +470,7 @@ export default function Home() {
         const results = await Promise.allSettled(Array.from({ length: Math.min(1, indexes.length) }, () => worker()));
         const failed = results.find(result => result.status === "rejected");
         if (failed?.status === "rejected") throw failed.reason;
-        setNotice(all ? "正文翻译完成" : "当前页翻译完成");
+        setNotice(`${all ? "正文翻译完成" : "当前页翻译完成"}${formulaFailures ? `；${formulaFailures} 个公式未能可靠识别，见公式栏提示` : ""}`);
         return;
       }
       for (let step = 0; step < indexes.length; step++) {
@@ -468,7 +516,7 @@ export default function Home() {
     <main className={`main-area direction-${direction}`}><header className="topbar"><div className="breadcrumbs">mypaperread <ChevronRight size={15}/> <strong>{doc.title}</strong></div><div className="top-actions"><button className="soft-button library-toggle" onClick={() => setLibraryOpen(true)}><BookOpen size={16}/> 文献库</button><button className="soft-button" onClick={() => setImportOpen(true)}><FilePlus2 size={16}/> 导入</button><button className="icon-button" aria-label="设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button></div></header>
       <section className="document-header"><div className="doc-kicker"><span className="file-chip">{doc.type === "sample" ? "示例文献" : doc.type === "pdf" ? "PDF" : "网页"}</span><span>双语对照阅读</span></div><div className="title-row"><div><h2>{doc.title}</h2><p>{doc.pages.length} {doc.type === "pdf" ? "页" : "段"} · 原文与译文对照</p></div><div className="title-actions"><button className="quiet-button" disabled={busy || doc.type === "sample"} onClick={() => translate(false)}><Languages size={17}/> 翻译当前页</button><button className="primary-button" disabled={busy || doc.type === "sample"} onClick={() => translate(true)}><Sparkles size={17}/> {doc.type === "pdf" ? "翻译正文" : "翻译全文"}</button></div></div></section>
       <div className="toolbar"><div className="toolbar-group"><button className="tool-icon" aria-label="上一页" disabled={page === 0} onClick={() => goTo(page - 1)}><ChevronLeft size={18}/></button><span className="page-count">{doc.type === "pdf" ? "页码" : "段落"} <strong>{page + 1}</strong> / {doc.pages.length}</span><button className="tool-icon" aria-label="下一页" disabled={page === doc.pages.length - 1} onClick={() => goTo(page + 1)}><ChevronRight size={18}/></button></div><div className="toolbar-spacer"/><label className="search-field"><Search size={17}/><input aria-label="搜索文献" placeholder="搜索当前文献" value={query} onChange={e => setQuery(e.target.value)}/></label>{query && <span className="match-count" onClick={() => matches.length && goTo(matches[0])}>{matches.length} 处匹配</span>}<select className="tool-select" aria-label="阅读方向" value={direction} onChange={e => setDirection(e.target.value as "paged" | "continuous")}><option value="paged">按页切换</option><option value="continuous">上下滚动</option></select><div className="toolbar-divider"/><select className="tool-select" aria-label="阅读布局" value={mode} onChange={e => setMode(e.target.value as typeof mode)}><option value="parallel">双栏对照</option><option value="triple">三栏阅读</option><option value="original">仅原文</option><option value="translation">仅译文</option></select><button className="tool-icon" aria-label="缩小" onClick={() => setZoom(Math.max(.6, zoom - .15))}>−</button><span className="zoom-label">{Math.round(zoom * 100)}%</span><button className="tool-icon" aria-label="放大" onClick={() => setZoom(Math.min(1.8, zoom + .15))}>+</button><button className="tool-icon" aria-label="导出 Markdown" onClick={download}><Download size={18}/></button></div>
-      <div className="reader-wrap"><div className={`reader-grid mode-${mode}${doc.pdf ? " pdf-grid" : ""}`}>{mode !== "translation" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge original-badge">ORIGINAL</span><strong>原文</strong></div><span>{doc.type === "pdf" ? "PDF 页面" : "源文本"}</span></div><div className={`paper${doc.pdf ? " pdf-paper" : ""}`}>{doc.pdf ? <PdfPage data={doc.pdf} index={page} zoom={zoom} marks={marks[page] || []} sentencePairs={current.sentencePairs || []} activeSentenceIndex={activeSentence?.page === page ? activeSentence.index : null} onSentenceSelect={index => setActiveSentence({ page, index })} onMark={mark => markPdf(page, mark)} onTranslateSelection={translateSelection}/> : <><div className="paper-top"><span>{doc.type === "sample" ? "RESEARCH NOTE · SAMPLE" : "SOURCE DOCUMENT"}</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{current.text}</p><div className="paper-footer">MYPAPERREAD <span>— {page + 1} —</span></div></>}</div></section>}{mode === "triple" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge text-badge">EXTRACTED TEXT</span><strong>提取文字</strong></div><span>可复制</span></div><div className="paper extracted-paper"><div className="paper-top"><span>源文本</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{current.text}</p></div></section>}{mode !== "original" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge translation-badge">TRANSLATION</span><strong>译文</strong></div><span>{target}</span></div><div className="paper translated-paper"><div className="paper-top"><span>对照译文</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3>{current.translation ? <TranslatedContent item={current} pageIndex={page} activeSentence={activeSentence} onSentenceSelect={(page, index) => setActiveSentence({ page, index })} zoom={zoom} showHint={doc.type === "pdf"} pdf={doc.pdf}/> : <div className="empty-translation"><Sparkles size={23}/><strong>这一页尚未翻译</strong><span>{doc.type === "pdf" ? "一键仅翻译摘要至结论；也可选中原文单独翻译。" : "配置模型 API 后，可以翻译当前页或全文。"}</span><button className="quiet-button" onClick={() => translate(false)}>翻译当前页</button></div>}{doc.type === "sample" && <div className="translation-note"><Sparkles size={16}/> 示例译文。导入文献后可通过模型 API 生成全文翻译。</div>}</div></section>}</div><div className="reader-bottom"><span><span className="sync-symbol">↔</span> 原文与译文按页对应</span><div className="progress-track"><div style={{width: `${((page + 1) / doc.pages.length) * 100}%`}}/></div><span>{Math.round(((page + 1) / doc.pages.length) * 100)}% 已浏览</span></div></div>
+      <div className="reader-wrap"><div className={`reader-grid mode-${mode}${doc.pdf ? " pdf-grid" : ""}`}>{mode !== "translation" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge original-badge">ORIGINAL</span><strong>原文</strong></div><span>{doc.type === "pdf" ? "PDF 页面" : "源文本"}</span></div><div className={`paper${doc.pdf ? " pdf-paper" : ""}`}>{doc.pdf ? <PdfPage data={doc.pdf} index={page} zoom={zoom} marks={marks[page] || []} sentencePairs={current.sentencePairs || []} activeSentenceIndex={activeSentence?.page === page ? activeSentence.index : null} onSentenceSelect={index => setActiveSentence({ page, index })} onMark={mark => markPdf(page, mark)} onTranslateSelection={translateSelection}/> : <><div className="paper-top"><span>{doc.type === "sample" ? "RESEARCH NOTE · SAMPLE" : "SOURCE DOCUMENT"}</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{current.text}</p><div className="paper-footer">MYPAPERREAD <span>— {page + 1} —</span></div></>}</div></section>}{mode === "triple" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge text-badge">EXTRACTED TEXT</span><strong>提取文字</strong></div><span>可复制</span></div><div className="paper extracted-paper"><div className="paper-top"><span>源文本</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3><p style={{fontSize: `${16 * zoom}px`}}>{current.text}</p></div></section>}{mode !== "original" && <section className="reading-pane"><div className="pane-head"><div><span className="pane-badge translation-badge">TRANSLATION</span><strong>译文</strong></div><span>{target}</span></div><div className="paper translated-paper"><div className="paper-top"><span>对照译文</span><span>{page + 1} / {doc.pages.length}</span></div><h3>{current.heading}</h3>{current.translation ? <TranslatedContent item={current} pageIndex={page} activeSentence={activeSentence} onSentenceSelect={(page, index) => setActiveSentence({ page, index })} zoom={zoom} showHint={doc.type === "pdf"}/> : <div className="empty-translation"><Sparkles size={23}/><strong>这一页尚未翻译</strong><span>{doc.type === "pdf" ? "一键仅翻译摘要至结论；也可选中原文单独翻译。" : "配置模型 API 后，可以翻译当前页或全文。"}</span><button className="quiet-button" onClick={() => translate(false)}>翻译当前页</button></div>}{doc.type === "sample" && <div className="translation-note"><Sparkles size={16}/> 示例译文。导入文献后可通过模型 API 生成全文翻译。</div>}</div></section>}</div><div className="reader-bottom"><span><span className="sync-symbol">↔</span> 原文与译文按页对应</span><div className="progress-track"><div style={{width: `${((page + 1) / doc.pages.length) * 100}%`}}/></div><span>{Math.round(((page + 1) / doc.pages.length) * 100)}% 已浏览</span></div></div>
       {direction === "continuous" && <ContinuousReader doc={doc} mode={mode} zoom={zoom} target={target} marks={marks} activeSentence={activeSentence} onSentenceSelect={(page, index) => setActiveSentence({ page, index })} onPageVisible={setPage} onTranslate={index => translate(false, index)} onMark={markPdf} onTranslateSelection={translateSelection}/>}
     </main>
     {notice && <div role="status" className="toast">{notice}<button aria-label="关闭提示" onClick={() => setNotice("")}><X size={15}/></button></div>}
@@ -498,6 +546,14 @@ export default function Home() {
           <select value={target} onChange={e => { setTarget(e.target.value); if (doc.type !== "sample") setDoc(current => ({ ...current, pages: current.pages.map(p => ({ ...p, translation: "" })) })); }}><option>简体中文</option><option>繁體中文</option><option>English</option><option>日本語</option></select>
         </label>
         <label className="remember-key"><input type="checkbox" checked={rememberApiKey} onChange={e => setRememberApiKey(e.target.checked)}/> 在此浏览器保存 API Key</label>
+        <label className="remember-key"><input type="checkbox" checked={formulaVision} onChange={e => setFormulaVision(e.target.checked)}/> 使用独立视觉模型识别公式</label>
+        <p className="settings-tip">公式统一输出 LaTeX。默认使用正文模型从文本重建；复杂矩阵或缺失字符建议使用支持图片输入的模型。启用后仅将公式区域图片发送至下方配置的平台。</p>
+        {formulaVision && <div className="formula-model-settings">
+          <label className="field-label">公式识别平台<select value={formulaProvider} onChange={e => { const next = e.target.value as ProviderId; setFormulaProvider(next); setFormulaBaseUrl(providerById(next)?.baseUrl || ""); setFormulaKey(""); setFormulaModel(""); }}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+          <label className="field-label">公式接口地址<input value={formulaBaseUrl} onChange={e => setFormulaBaseUrl(e.target.value)} placeholder="https://…/v1"/></label>
+          <label className="field-label">公式模型 ID<input value={formulaModel} onChange={e => setFormulaModel(e.target.value)} placeholder="填写支持图片输入的模型 ID"/></label>
+          <label className="field-label">公式 API Key<input type="password" value={formulaKey} onChange={e => setFormulaKey(e.target.value)} placeholder="公式平台的 API Key" autoComplete="off"/></label>
+        </div>}
         <p className="settings-tip">开启后，API Key 会以明文保存在此浏览器的本地存储中，刷新页面后可继续使用。翻译时，原文将发送到所选平台；切换平台会清除当前输入的密钥。</p>
         <div className="settings-actions"><button className="quiet-button" disabled={testing} onClick={testConnection}>{testing ? "正在测试…" : "测试连接"}</button><button className="primary-button" onClick={() => setSettingsOpen(false)}>完成</button></div>
       </DialogContent>

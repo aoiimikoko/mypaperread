@@ -43,11 +43,17 @@
 .linked-formula{display:block;margin:13px 0;padding:9px 11px;background:#f4f6fa;border-left:3px solid #9aa6c4;font-family:"Cambria Math","Times New Roman",serif;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55}
 .linked-visual-spacer{display:block;height:1.65em;margin:3px 0}
 .translated-content{line-height:1.9;white-space:pre-wrap}
-.formula-block{min-height:70px;overflow:auto;cursor:pointer}
-.formula-block-label{font-family:inherit;font-size:11px;color:#73809a;margin-bottom:7px;letter-spacing:.04em}
-.formula-canvas{display:block;max-width:100%;height:auto;background:#fff}
-.formula-canvas-pending{display:none}
-.formula-fallback{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}
+.formula-block{overflow:hidden;cursor:pointer;white-space:normal}
+.formula-block-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:inherit;font-size:11px;color:#73809a;margin-bottom:7px}
+.formula-block-head button{border:0;background:#e6ebf7;color:#445985;border-radius:5px;padding:4px 7px;cursor:pointer}
+.formula-math{overflow-x:auto;overflow-y:hidden;padding:6px 0}
+.formula-math .katex-display{margin:.3em 0;text-align:center}
+.formula-status{font-size:13px;line-height:1.6;color:#7c6271}
+.formula-block details{font-size:11px;color:#73809a;margin-top:7px}
+.formula-block summary{cursor:pointer}
+.formula-block pre{max-height:180px;overflow:auto;white-space:pre;font-size:12px;background:#fff;padding:8px;border-radius:5px}
+.formula-model-settings{border:1px solid #e1e5ef;border-radius:8px;padding:12px;margin-top:10px}
+.modal-content{max-height:calc(100dvh - 48px);overflow-y:auto}
 .linked-sentence-active{background:#7a91ff57;box-shadow:0 0 0 2px #7a91ff57}
 .alignment-hint{display:block;margin-top:16px;color:#8b96a8;font-size:11px}
 .pdf-selection-tools{position:fixed;z-index:80;background:#fff;border:1px solid #d9e0ec;border-radius:9px;box-shadow:0 10px 30px #16243d32;max-width:min(380px,calc(100vw - 24px));font-size:12px}
